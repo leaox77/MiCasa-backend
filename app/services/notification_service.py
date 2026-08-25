@@ -116,3 +116,22 @@ def notify_favorite_price_change(property_id: str, prop_title: str, old_price: f
             subject=f"💰 Cambio de precio — {prop_title}",
             html=f"<p>El precio de <strong>{prop_title}</strong> que tenés en favoritos cambió de <strong>{old_price:,.0f} {currency}</strong> a <strong>{new_price:,.0f} {currency}</strong>.</p>",
         )
+
+def notify_admin_new_property_pending(property_id: str, prop_title: str, publisher_id: str) -> None:
+    """Notifica a todos los admins que una propiedad quedó pendiente de revisión."""
+    admin = get_supabase_admin()
+    admins = admin.table("profiles").select("id, email").eq("role", "admin").execute()
+
+    for adm in (admins.data or []):
+        create_notification(
+            user_id=adm["id"],
+            notif_type="property_pending_review",
+            title="Nueva propiedad pendiente de revisión",
+            body=f"'{prop_title}' fue enviada a revisión y espera tu aprobación.",
+            property_id=property_id,
+        )
+        send_email(
+            to=adm.get("email", ""),
+            subject="🕓 Nueva propiedad pendiente de revisión — Mi Casa",
+            html=f"<p>Una nueva propiedad, <strong>{prop_title}</strong>, fue enviada a revisión y espera tu aprobación.</p>",
+        )

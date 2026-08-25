@@ -16,6 +16,7 @@ class RegisterRequest(BaseModel):
     role: Literal["buyer", "publisher"] = "buyer"
     phone: Optional[str] = None
     publisher_type: Optional[PublisherType] = None
+    terms_accepted: bool
 
     @field_validator("password")
     @classmethod
@@ -37,6 +38,12 @@ class RegisterRequest(BaseModel):
         # Se valida en el servicio porque info.data puede no tener 'role' aún
         return v
 
+    @field_validator("terms_accepted")
+    @classmethod
+    def terms_must_be_accepted(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("Debés aceptar los términos y condiciones para registrarte.")
+        return v
 
 class LoginRequest(BaseModel):
     email: EmailStr

@@ -4,6 +4,7 @@ from app.core.security import decode_jwt
 from app.core.supabase import get_supabase_admin
 
 bearer_scheme = HTTPBearer()
+bearer_scheme_optional = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
@@ -69,3 +70,17 @@ def require_verified_publisher(
             detail="Debés verificar tu número de celular antes de publicar.",
         )
     return current_user
+
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme_optional),
+) -> dict | None:
+    """Igual que get_current_user pero no exige login: devuelve None si no
+    hay token o si es inválido, en vez de lanzar 401. Para endpoints donde
+    el comportamiento cambia si hay usuario pero no es obligatorio (ej.
+    GET /properties/{id})."""
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(credentials)
+    except HTTPException:
+        return None
