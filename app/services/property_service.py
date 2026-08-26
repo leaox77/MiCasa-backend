@@ -4,7 +4,15 @@ from enum import Enum
 from fastapi import HTTPException, UploadFile, status
 
 from app.core.supabase import get_supabase_admin
-from app.schemas.properties import PropertyCreate, PropertyStatus, PropertyUpdate
+from app.schemas.properties import (
+    OrderBy,
+    PropertyCreate,
+    PropertyListItem,
+    PropertySearchParams,
+    PropertySearchResponse,
+    PropertyStatus,
+    PropertyUpdate,
+)
 from app.services import storage_service
 from app.services.notification_service import (
     notify_admin_new_property_pending,
@@ -301,3 +309,87 @@ def reorder_property_images(property_id: str, publisher_id: str, image_ids_in_or
     admin = get_supabase_admin()
     _get_owned_property_or_404(property_id, publisher_id, admin)
     storage_service.reorder_property_images(property_id, image_ids_in_order)
+
+def _to_list_item(row: dict) -> PropertyListItem:
+    """Arma un PropertyListItem a partir de una fila de properties con
+    property_images embebido (ver select() en search_properties)."""
+    images = row.get("property_images") or []
+    foto_principal = None
+    if images:
+        primera = min(images, key=lambda img: img.get("order_index", 0))
+        foto_principal = primera.get("url")
+
+    etiquetas = []
+    if row.get("es_preventa"):
+        etiquetas.append("preventa")
+    if row.get("ideal_inversion"):
+        etiquetas.append("inversion")
+
+    return PropertyListItem(
+        id=row["id"],
+        foto_principal=foto_principal,
+        tipo=row["tipo"],
+        precio=row["precio"],
+        moneda=row["moneda"],
+        zona=row["zona"],
+        habitaciones=row["habitaciones"],
+        m2=row["m2"],
+        etiquetas=etiquetas,
+    )
+
+
+def search_properties(params: PropertySearchParams) -> PropertySearchResponse:
+    """Listado público con filtros acumulables (AND), paginación y orden.
+    Solo devuelve propiedades 'published'."""
+    admin = get_supabase_admin()
+
+    query = (
+        admin.table("properties")
+        .select("*, property_images(url, order_index)", count="exact")
+        .eq("estado", PropertyStatus.published.value)
+    )
+
+    if params.tipo is not None:
+        query = query.eq("tipo", params.tipo.value)
+    if params.precio_min is not None:
+        query = query.gte("precio", float(params.precio_min))
+    if params.precio_max is not None:
+        query = query.lte("precio", float(params.precio_max))
+    if params.moneda is not None:
+        query = query.eq("moneda", params.moneda.value)
+    if params.zona is not None:
+        query = query.ilike("zona", f"%{params.zona}%")
+    if params.habitaciones is not None:
+        query = query.eq("habitaciones", params.habitaciones)
+    if params.m2_min is not None:
+        query = query.gte("m2", params.m2_min)
+    if params.m2_max is not None:
+        query = query.lte("m2", params.m2_max)
+    if params.garaje is not None:
+        query = query.eq("garaje", params.garaje)
+    if params.antiguedad is not None:
+        query = query.lte("antiguedad", params.antiguedad)
+    if params.preventa is not None:
+        query = query.eq("es_preventa", params.preventa)
+
+    if params.orden == OrderBy.precio_asc:
+        query = query.order("precio", desc=False)
+    elif params.orden == OrderBy.precio_desc:
+        query = query.order("precio", desc=True)
+    else:
+        query = query.order("created_at", desc=True)
+
+    start = (params.page - 1) * params.page_size
+    end = start + params.page_size - 1
+    query = query.range(start, end)
+
+    result = query.execute()
+    rows = result.data or []
+    total = result.count or 0
+
+    return PropertySearchResponse(
+        results=[_to_list_item(row) for row in rows],
+        total=total,
+        page=params.page,
+        page_size=params.page_size,
+    )

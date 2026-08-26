@@ -1,12 +1,19 @@
-from fastapi import APIRouter, Depends, File, Query, UploadFile, status
-from pydantic import BaseModel
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, ValidationError
 
 from app.dependencies import get_current_user, get_current_user_optional, require_verified_publisher
 from app.schemas.properties import (
+    Currency,
+    OrderBy,
     PropertyCreate,
     PropertyImageResponse,
     PropertyResponse,
+    PropertySearchParams,
+    PropertySearchResponse,
     PropertyStatusUpdate,
+    PropertyType,
     PropertyUpdate,
 )
 from app.services import property_service
@@ -31,6 +38,44 @@ def create_property(
 ):
     return property_service.create_property(current_user["id"], data, submit=submit)
 
+@router.get("", response_model=PropertySearchResponse)
+def search_properties(
+    tipo: PropertyType | None = Query(None),
+    precio_min: Decimal | None = Query(None, ge=0),
+    precio_max: Decimal | None = Query(None, ge=0),
+    moneda: Currency | None = Query(None),
+    zona: str | None = Query(None),
+    habitaciones: int | None = Query(None, ge=0),
+    m2_min: float | None = Query(None, ge=0),
+    m2_max: float | None = Query(None, ge=0),
+    garaje: bool | None = Query(None),
+    antiguedad: int | None = Query(None, ge=0),
+    preventa: bool | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    orden: OrderBy = Query(OrderBy.reciente),
+):
+    try:
+        params = PropertySearchParams(
+            tipo=tipo,
+            precio_min=precio_min,
+            precio_max=precio_max,
+            moneda=moneda,
+            zona=zona,
+            habitaciones=habitaciones,
+            m2_min=m2_min,
+            m2_max=m2_max,
+            garaje=garaje,
+            antiguedad=antiguedad,
+            preventa=preventa,
+            page=page,
+            page_size=page_size,
+            orden=orden,
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.errors())
+
+    return property_service.search_properties(params)
 
 @router.get("/{property_id}", response_model=PropertyResponse)
 def get_property(

@@ -226,3 +226,48 @@ class PropertyListItem(BaseModel):
     habitaciones: int
     m2: float
     etiquetas: List[str] = []
+
+class OrderBy(str, Enum):
+    reciente = "reciente"
+    precio_asc = "precio_asc"
+    precio_desc = "precio_desc"
+
+
+class PropertySearchParams(BaseModel):
+    tipo: Optional[PropertyType] = None
+    precio_min: Optional[Decimal] = Field(default=None, ge=0)
+    precio_max: Optional[Decimal] = Field(default=None, ge=0)
+    moneda: Optional[Currency] = None
+    zona: Optional[str] = None
+    habitaciones: Optional[int] = Field(default=None, ge=0)
+    m2_min: Optional[float] = Field(default=None, ge=0)
+    m2_max: Optional[float] = Field(default=None, ge=0)
+    garaje: Optional[bool] = None
+    antiguedad: Optional[int] = Field(default=None, ge=0)
+    preventa: Optional[bool] = None
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    orden: OrderBy = OrderBy.reciente
+
+    @model_validator(mode="after")
+    def rangos_coherentes(self) -> "PropertySearchParams":
+        if (
+            self.precio_min is not None
+            and self.precio_max is not None
+            and self.precio_min > self.precio_max
+        ):
+            raise ValueError("precio_min no puede ser mayor a precio_max.")
+        if (
+            self.m2_min is not None
+            and self.m2_max is not None
+            and self.m2_min > self.m2_max
+        ):
+            raise ValueError("m2_min no puede ser mayor a m2_max.")
+        return self
+
+
+class PropertySearchResponse(BaseModel):
+    results: List[PropertyListItem]
+    total: int
+    page: int
+    page_size: int
