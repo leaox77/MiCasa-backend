@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 from fastapi import HTTPException
 
 from app.dependencies import get_current_user

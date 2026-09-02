@@ -1,23 +1,34 @@
-from jose import jwt, JWTError
 from fastapi import HTTPException, status
-from app.core.config import get_settings
-
-settings = get_settings()
-
-ALGORITHM = "HS256"
+from app.core.supabase import get_supabase_admin
 
 
 def decode_jwt(token: str) -> dict:
-    """Decodifica y valida un JWT de Supabase Auth."""
+    """Valida un JWT de Supabase Auth y devuelve los datos del usuario."""
     try:
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=[ALGORITHM],
-            options={"verify_aud": False},
-        )
-        return payload
-    except JWTError:
+        admin = get_supabase_admin()
+
+        response = admin.auth.get_user(token)
+
+        if not response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token inválido o expirado.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        user = response.user
+
+        return {
+            "sub": user.id,
+            "email": user.email,
+            "role": user.role,
+            "user_metadata": user.user_metadata,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token inválido o expirado.",

@@ -33,15 +33,16 @@ def register_user(data: RegisterRequest) -> dict:
             "user_metadata": {
                 "full_name": data.full_name,
                 "role": data.role,
-            }
+            },
+            "app_metadata": {}
         })
     except Exception as e:
-        error_msg = str(e).lower()
-        if "already registered" in error_msg or "already exists" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Este email ya está registrado.",
-            )
+        # Temporal para debug — borrar después
+        print(f"ERROR SUPABASE DETALLE: {type(e).__name__}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"DEBUG: {str(e)}",
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al crear la cuenta. Intentá de nuevo.",
