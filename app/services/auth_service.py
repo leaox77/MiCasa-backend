@@ -9,6 +9,11 @@ settings = get_settings()
 
 def register_user(data: RegisterRequest) -> dict:
     """Registra un usuario en Supabase Auth y actualiza su perfil."""
+    if not data.terms_accepted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debés aceptar los términos y condiciones para registrarte.",
+        )
 
     # Validar que publicador tiene tipo
     if data.role == "publisher" and not data.publisher_type:
