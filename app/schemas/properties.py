@@ -7,30 +7,16 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
-# Enums (deben coincidir exactamente con los ENUM creados en Supabase - Bloque 1)
+# NOTA / PENDIENTE (revisar con Leandro - coherencia de schema):
+# Las columnas "status" (workflow draft/pending_review/published/...),
+# "currency" (BOB/USD) y "property_type" (casa/departamento/terreno/...)
+# NO existen en la tabla "properties" real (schema.sql / data.sql que mandó
+# Leandro). Por eso los enums PropertyType, PropertyStatus y Currency, y todos
+# los campos que dependian de ellos (tipo, estado, moneda, nuevo_estado)
+# quedan fuera de este archivo por ahora. Esto significa que, hasta que se
+# resuelva ese punto, no hay filtro por tipo de propiedad, no hay manejo de
+# moneda, y no hay workflow de aprobación/publicación a nivel de columna.
 # ---------------------------------------------------------------------------
-
-class PropertyType(str, Enum):
-    casa = "casa"
-    departamento = "departamento"
-    terreno = "terreno"
-    local = "local"
-    oficina = "oficina"
-
-
-class PropertyStatus(str, Enum):
-    draft = "draft"
-    pending_review = "pending_review"
-    published = "published"
-    paused = "paused"
-    expired = "expired"
-    deleted = "deleted"
-    rejected = "rejected"
-
-
-class Currency(str, Enum):
-    BOB = "BOB"
-    USD = "USD"
 
 
 # ---------------------------------------------------------------------------
@@ -55,51 +41,52 @@ class PropertyPublisherInfo(BaseModel):
 # ---------------------------------------------------------------------------
 
 class PropertyCreate(BaseModel):
-    tipo: PropertyType
-    titulo: str
-    descripcion: str
-    precio: Decimal
-    moneda: Currency
-    zona: str
-    direccion: str
-    habitaciones: int = Field(ge=0)
-    banos: int = Field(ge=0)
-    m2: float
-    garaje: bool
-    antiguedad: int = Field(ge=0)
-    es_preventa: bool = False
-    ideal_inversion: bool = False
-    rentabilidad_estimada: Optional[float] = None
-    whatsapp_contacto: Optional[str] = None
+    title: str
+    description: str
+    price: Decimal
+    zone: str
+    city: Optional[str] = None  # columna real tiene DEFAULT 'Santa Cruz de la Sierra'
+    address_private: Optional[str] = None  # antes "direccion"; solo visible p/ usuarios registrados
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    bedrooms: int = Field(ge=0)
+    bathrooms: int = Field(ge=0)
+    area_m2: float
+    has_garage: bool
+    age_years: int = Field(ge=0)
+    is_presale: bool = False
+    is_investment: bool = False
+    estimated_yield: Optional[float] = None
+    contact_whatsapp: Optional[str] = None
 
-    @field_validator("titulo")
+    @field_validator("title")
     @classmethod
-    def titulo_length(cls, v: str) -> str:
+    def title_length(cls, v: str) -> str:
         v = v.strip()
         if not (10 <= len(v) <= 100):
             raise ValueError("El título debe tener entre 10 y 100 caracteres.")
         return v
 
-    @field_validator("precio")
+    @field_validator("price")
     @classmethod
-    def precio_positivo(cls, v: Decimal) -> Decimal:
+    def price_positive(cls, v: Decimal) -> Decimal:
         if v <= 0:
             raise ValueError("El precio debe ser mayor a 0.")
         return v
 
-    @field_validator("m2")
+    @field_validator("area_m2")
     @classmethod
-    def m2_positivo(cls, v: float) -> float:
+    def area_m2_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("Los m2 deben ser mayores a 0.")
         return v
 
     @model_validator(mode="after")
-    def rentabilidad_coherente(self) -> "PropertyCreate":
+    def yield_coherente(self) -> "PropertyCreate":
         if (
-            (self.es_preventa or self.ideal_inversion)
-            and self.rentabilidad_estimada is not None
-            and self.rentabilidad_estimada < 0
+            (self.is_presale or self.is_investment)
+            and self.estimated_yield is not None
+            and self.estimated_yield < 0
         ):
             raise ValueError(
                 "Si la propiedad es preventa o ideal para inversión, "
@@ -109,26 +96,27 @@ class PropertyCreate(BaseModel):
 
 
 class PropertyUpdate(BaseModel):
-    tipo: Optional[PropertyType] = None
-    titulo: Optional[str] = None
-    descripcion: Optional[str] = None
-    precio: Optional[Decimal] = None
-    moneda: Optional[Currency] = None
-    zona: Optional[str] = None
-    direccion: Optional[str] = None
-    habitaciones: Optional[int] = Field(default=None, ge=0)
-    banos: Optional[int] = Field(default=None, ge=0)
-    m2: Optional[float] = None
-    garaje: Optional[bool] = None
-    antiguedad: Optional[int] = Field(default=None, ge=0)
-    es_preventa: Optional[bool] = None
-    ideal_inversion: Optional[bool] = None
-    rentabilidad_estimada: Optional[float] = None
-    whatsapp_contacto: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[Decimal] = None
+    zone: Optional[str] = None
+    city: Optional[str] = None
+    address_private: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    bedrooms: Optional[int] = Field(default=None, ge=0)
+    bathrooms: Optional[int] = Field(default=None, ge=0)
+    area_m2: Optional[float] = None
+    has_garage: Optional[bool] = None
+    age_years: Optional[int] = Field(default=None, ge=0)
+    is_presale: Optional[bool] = None
+    is_investment: Optional[bool] = None
+    estimated_yield: Optional[float] = None
+    contact_whatsapp: Optional[str] = None
 
-    @field_validator("titulo")
+    @field_validator("title")
     @classmethod
-    def titulo_length(cls, v: Optional[str]) -> Optional[str]:
+    def title_length(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         v = v.strip()
@@ -136,49 +124,36 @@ class PropertyUpdate(BaseModel):
             raise ValueError("El título debe tener entre 10 y 100 caracteres.")
         return v
 
-    @field_validator("precio")
+    @field_validator("price")
     @classmethod
-    def precio_positivo(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+    def price_positive(cls, v: Optional[Decimal]) -> Optional[Decimal]:
         if v is not None and v <= 0:
             raise ValueError("El precio debe ser mayor a 0.")
         return v
 
-    @field_validator("m2")
+    @field_validator("area_m2")
     @classmethod
-    def m2_positivo(cls, v: Optional[float]) -> Optional[float]:
+    def area_m2_positive(cls, v: Optional[float]) -> Optional[float]:
         if v is not None and v <= 0:
             raise ValueError("Los m2 deben ser mayores a 0.")
         return v
 
     @model_validator(mode="after")
-    def rentabilidad_coherente(self) -> "PropertyUpdate":
+    def yield_coherente(self) -> "PropertyUpdate":
         # Ojo: esto solo valida coherencia entre campos presentes en ESTE PATCH.
-        # Si en un PATCH separado se cambia ideal_inversion sin tocar
-        # rentabilidad_estimada, la coherencia contra el valor ya guardado en
-        # la fila debe validarse en property_service.py (Bloque 4).
+        # Si en un PATCH separado se cambia is_investment sin tocar
+        # estimated_yield, la coherencia contra el valor ya guardado en
+        # la fila debe validarse en property_service.py.
         if (
-            (self.es_preventa or self.ideal_inversion)
-            and self.rentabilidad_estimada is not None
-            and self.rentabilidad_estimada < 0
+            (self.is_presale or self.is_investment)
+            and self.estimated_yield is not None
+            and self.estimated_yield < 0
         ):
             raise ValueError(
                 "Si la propiedad es preventa o ideal para inversión, "
                 "la rentabilidad estimada no puede ser negativa."
             )
         return self
-
-
-class PropertyStatusUpdate(BaseModel):
-    nuevo_estado: PropertyStatus
-    motivo: Optional[str] = None
-
-    @field_validator("motivo")
-    @classmethod
-    def motivo_limpio(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        v = v.strip()
-        return v or None
 
 
 class PropertyImageCreate(BaseModel):
@@ -192,77 +167,82 @@ class PropertyImageCreate(BaseModel):
 
 class PropertyResponse(BaseModel):
     id: str
-    tipo: PropertyType
-    titulo: str
-    descripcion: str
-    precio: Decimal
-    moneda: Currency
-    zona: str
-    direccion: str
-    habitaciones: int
-    banos: int
-    m2: float
-    garaje: bool
-    antiguedad: int
-    es_preventa: bool
-    ideal_inversion: bool
-    rentabilidad_estimada: Optional[float] = None
-    whatsapp_contacto: Optional[str] = None
+    title: str
+    description: str
+    price: Decimal
+    zone: str
+    city: str
+    address_private: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    bedrooms: int
+    bathrooms: int
+    area_m2: float
+    has_garage: bool
+    age_years: int
+    is_presale: bool
+    is_investment: bool
+    estimated_yield: Optional[float] = None
+    contact_whatsapp: Optional[str] = None
     publisher_id: str
-    estado: PropertyStatus
+    view_count: int
+    interest_count: int
+    published_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    renewed_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    imagenes: List[PropertyImageResponse] = []
+    images: List[PropertyImageResponse] = []
     publisher: Optional[PropertyPublisherInfo] = None
 
 
 class PropertyListItem(BaseModel):
     id: str
-    foto_principal: Optional[HttpUrl] = None
-    tipo: PropertyType
-    precio: Decimal
-    moneda: Currency
-    zona: str
-    habitaciones: int
-    m2: float
-    etiquetas: List[str] = []
+    main_photo: Optional[HttpUrl] = None
+    price: Decimal
+    zone: str
+    city: str
+    bedrooms: int
+    area_m2: float
+    tags: List[str] = []
+
 
 class OrderBy(str, Enum):
-    reciente = "reciente"
-    precio_asc = "precio_asc"
-    precio_desc = "precio_desc"
+    recent = "recent"
+    price_asc = "price_asc"
+    price_desc = "price_desc"
 
 
 class PropertySearchParams(BaseModel):
-    tipo: Optional[PropertyType] = None
-    precio_min: Optional[Decimal] = Field(default=None, ge=0)
-    precio_max: Optional[Decimal] = Field(default=None, ge=0)
-    moneda: Optional[Currency] = None
-    zona: Optional[str] = None
-    habitaciones: Optional[int] = Field(default=None, ge=0)
-    m2_min: Optional[float] = Field(default=None, ge=0)
-    m2_max: Optional[float] = Field(default=None, ge=0)
-    garaje: Optional[bool] = None
-    antiguedad: Optional[int] = Field(default=None, ge=0)
-    preventa: Optional[bool] = None
+    price_min: Optional[Decimal] = Field(default=None, ge=0)
+    price_max: Optional[Decimal] = Field(default=None, ge=0)
+    zone: Optional[str] = None
+    city: Optional[str] = None
+    bedrooms: Optional[int] = Field(default=None, ge=0)
+    area_m2_min: Optional[float] = Field(default=None, ge=0)
+    area_m2_max: Optional[float] = Field(default=None, ge=0)
+    has_garage: Optional[bool] = None
+    age_years: Optional[int] = Field(default=None, ge=0)
+    is_presale: Optional[bool] = None
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
-    orden: OrderBy = OrderBy.reciente
+    order: OrderBy = OrderBy.recent
 
     @model_validator(mode="after")
     def rangos_coherentes(self) -> "PropertySearchParams":
         if (
-            self.precio_min is not None
-            and self.precio_max is not None
-            and self.precio_min > self.precio_max
+            self.price_min is not None
+            and self.price_max is not None
+            and self.price_min > self.price_max
         ):
-            raise ValueError("precio_min no puede ser mayor a precio_max.")
+            raise ValueError("price_min no puede ser mayor a price_max.")
         if (
-            self.m2_min is not None
-            and self.m2_max is not None
-            and self.m2_min > self.m2_max
+            self.area_m2_min is not None
+            and self.area_m2_max is not None
+            and self.area_m2_min > self.area_m2_max
         ):
-            raise ValueError("m2_min no puede ser mayor a m2_max.")
+            raise ValueError("area_m2_min no puede ser mayor a area_m2_max.")
         return self
 
 

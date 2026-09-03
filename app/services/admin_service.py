@@ -18,71 +18,36 @@ def _log_action(admin_id: str, action: str, target_type: str, target_id: str, de
 
 
 def get_pending_properties() -> dict:
-    admin = get_supabase_admin()
-    result = (
-        admin.table("properties")
-        .select("id, titulo, tipo, zona, precio, moneda, created_at, profiles(full_name, publisher_type, email)")
-        .eq("estado", "pending_review")
-        .order("created_at", desc=False)
-        .execute()
+    """TODO / IMPORTANTE (pendiente coherencia de schema con Leandro): esta
+    función dependía por completo de la columna "status" (filtraba
+    'pending_review'). Sin esa columna no hay forma de saber qué propiedades
+    están pendientes de revisión — se deshabilita en vez de devolver una
+    lista que no representa lo que dice representar (p. ej. todas o
+    ninguna)."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Listado de pendientes no disponible: falta la columna 'status' en el schema real (pendiente de definir con Leandro).",
     )
-    return {"data": result.data or []}
 
 
 def approve_property(property_id: str, admin_id: str) -> dict:
-    admin = get_supabase_admin()
-
-    prop = admin.table("properties").select("*").eq("id", property_id).maybe_single().execute()
-    if not prop.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
-    if prop.data["estado"] != "pending_review":
-        raise HTTPException(status_code=400, detail="La propiedad no está en revisión.")
-
-    result = admin.table("properties").update({"estado": "published"}).eq("id", property_id).execute()
-    updated = result.data[0]
-
-    publisher = admin.table("profiles").select("email").eq("id", prop.data["publisher_id"]).maybe_single().execute()
-    publisher_email = (publisher.data or {}).get("email", "")
-
-    notify_publisher_property_approved(
-        publisher_id=prop.data["publisher_id"],
-        property_id=property_id,
-        title=updated["titulo"],
-        email=publisher_email,
+    """TODO (pendiente coherencia de schema con Leandro): dependía de leer
+    y escribir "estado". Deshabilitada por el mismo motivo que
+    get_pending_properties."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Aprobar propiedad no disponible: falta la columna 'status' en el schema real (pendiente de definir con Leandro).",
     )
-
-    _log_action(admin_id, "approve_property", "property", property_id)
-    return updated
 
 
 def reject_property(property_id: str, admin_id: str, reason: str) -> dict:
-    admin = get_supabase_admin()
-
-    prop = admin.table("properties").select("*").eq("id", property_id).maybe_single().execute()
-    if not prop.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
-    if prop.data["estado"] != "pending_review":
-        raise HTTPException(status_code=400, detail="La propiedad no está en revisión.")
-
-    result = admin.table("properties").update({
-        "estado": "rejected",
-        "rejection_reason": reason,
-    }).eq("id", property_id).execute()
-    updated = result.data[0]
-
-    publisher = admin.table("profiles").select("email").eq("id", prop.data["publisher_id"]).maybe_single().execute()
-    publisher_email = (publisher.data or {}).get("email", "")
-
-    notify_publisher_property_rejected(
-        publisher_id=prop.data["publisher_id"],
-        property_id=property_id,
-        title=updated["titulo"],
-        email=publisher_email,
-        reason=reason,
+    """TODO (pendiente coherencia de schema con Leandro): mismo motivo que
+    approve_property. `rejection_reason` sí existe como columna real, pero
+    no tiene sentido setearla sin poder validar/mover el estado."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Rechazar propiedad no disponible: falta la columna 'status' en el schema real (pendiente de definir con Leandro).",
     )
-
-    _log_action(admin_id, "reject_property", "property", property_id, {"reason": reason})
-    return updated
 
 
 def list_users(q: str = None, role: str = None, page: int = 1, page_size: int = 20) -> dict:
@@ -140,7 +105,7 @@ def list_reports() -> dict:
     admin = get_supabase_admin()
     result = (
         admin.table("reports")
-        .select("id, reason, description, resolved, created_at, properties(id, titulo), profiles(full_name)")
+        .select("id, reason, description, resolved, created_at, properties(id, title), profiles(full_name)")
         .eq("resolved", False)
         .order("created_at", desc=False)
         .execute()
