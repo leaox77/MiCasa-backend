@@ -5,15 +5,12 @@ from pydantic import BaseModel, ValidationError
 
 from app.dependencies import get_current_user, get_current_user_optional, require_verified_publisher
 from app.schemas.properties import (
-    Currency,
     OrderBy,
     PropertyCreate,
     PropertyImageResponse,
     PropertyResponse,
     PropertySearchParams,
     PropertySearchResponse,
-    PropertyStatusUpdate,
-    PropertyType,
     PropertyUpdate,
 )
 from app.services import property_service
@@ -38,39 +35,38 @@ def create_property(
 ):
     return property_service.create_property(current_user["id"], data, submit=submit)
 
+
 @router.get("", response_model=PropertySearchResponse)
 def search_properties(
-    tipo: PropertyType | None = Query(None),
-    precio_min: Decimal | None = Query(None, ge=0),
-    precio_max: Decimal | None = Query(None, ge=0),
-    moneda: Currency | None = Query(None),
-    zona: str | None = Query(None),
-    habitaciones: int | None = Query(None, ge=0),
-    m2_min: float | None = Query(None, ge=0),
-    m2_max: float | None = Query(None, ge=0),
-    garaje: bool | None = Query(None),
-    antiguedad: int | None = Query(None, ge=0),
-    preventa: bool | None = Query(None),
+    price_min: Decimal | None = Query(None, ge=0),
+    price_max: Decimal | None = Query(None, ge=0),
+    zone: str | None = Query(None),
+    city: str | None = Query(None),
+    bedrooms: int | None = Query(None, ge=0),
+    area_m2_min: float | None = Query(None, ge=0),
+    area_m2_max: float | None = Query(None, ge=0),
+    has_garage: bool | None = Query(None),
+    age_years: int | None = Query(None, ge=0),
+    is_presale: bool | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    orden: OrderBy = Query(OrderBy.reciente),
+    order: OrderBy = Query(OrderBy.recent),
 ):
     try:
         params = PropertySearchParams(
-            tipo=tipo,
-            precio_min=precio_min,
-            precio_max=precio_max,
-            moneda=moneda,
-            zona=zona,
-            habitaciones=habitaciones,
-            m2_min=m2_min,
-            m2_max=m2_max,
-            garaje=garaje,
-            antiguedad=antiguedad,
-            preventa=preventa,
+            price_min=price_min,
+            price_max=price_max,
+            zone=zone,
+            city=city,
+            bedrooms=bedrooms,
+            area_m2_min=area_m2_min,
+            area_m2_max=area_m2_max,
+            has_garage=has_garage,
+            age_years=age_years,
+            is_presale=is_presale,
             page=page,
             page_size=page_size,
-            orden=orden,
+            order=order,
         )
     except ValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.errors())
@@ -97,15 +93,13 @@ def update_property(
 @router.patch("/{property_id}/status", response_model=PropertyResponse)
 def change_property_status(
     property_id: str,
-    data: PropertyStatusUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    return property_service.change_property_status(
-        property_id=property_id,
-        actor=current_user,
-        new_status=data.nuevo_estado,
-        reason=data.motivo,
-    )
+    # TODO (pendiente coherencia de schema con Leandro): endpoint
+    # deshabilitado — property_service.change_property_status ahora
+    # devuelve 501 porque no hay columna "status" en la BD real.
+    # Se saca el body PropertyStatusUpdate porque ese schema ya no existe.
+    return property_service.change_property_status()
 
 
 @router.post(

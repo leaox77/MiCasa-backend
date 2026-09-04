@@ -1,6 +1,12 @@
 """
-Script de seed para poblar `properties` con datos ficticios en estado
-'published', para probar paginación y filtros (Bloque 6) en staging.
+Script de seed para poblar `properties` con datos ficticios, para probar
+paginación y filtros en staging.
+
+TODO (pendiente coherencia de schema con Leandro): el seed original
+generaba `tipo`, `moneda` y `estado` (todas 'published'). Esas 3 columnas
+no existen en la BD real, así que este script ya NO las setea. Como
+consecuencia, TODAS las propiedades insertadas quedan visibles/buscables
+igual (no hay estado que las distinga como "publicadas").
 
 Uso:
     python -m scripts.seed_properties --publisher-id <uuid-de-un-publisher-verificado>
@@ -24,7 +30,6 @@ from app.core.supabase import get_supabase_admin
 SEED_PREFIX = "[SEED]"
 
 TIPOS = ["casa", "departamento", "terreno", "local", "oficina"]
-MONEDAS = ["BOB", "USD"]
 ZONAS = [
     "Equipetrol", "Las Palmas", "Urbari", "Zona Norte", "Barrio Sirari",
     "Segundo Anillo", "Tercer Anillo", "Av. Banzer", "La Guardia",
@@ -43,39 +48,35 @@ TITULOS_BASE = [
 
 
 def _fake_property(index: int, publisher_id: str) -> dict:
-    tipo = random.choice(TIPOS)
-    zona = random.choice(ZONAS)
-    moneda = random.choice(MONEDAS)
-    habitaciones = random.randint(1, 6) if tipo in ("casa", "departamento") else 0
-    banos = max(1, habitaciones - random.randint(0, 1)) if habitaciones else random.randint(1, 3)
-    m2 = round(random.uniform(45, 600), 2)
-    precio_base = random.uniform(20000, 450000)
-    precio = round(precio_base if moneda == "USD" else precio_base * 6.96, 2)
-    ideal_inversion = random.random() < 0.25
-    es_preventa = random.random() < 0.15
+    tipo = random.choice(TIPOS)  # usado solo para armar el título, ver TODO arriba
+    zone = random.choice(ZONAS)
+    bedrooms = random.randint(1, 6) if tipo in ("casa", "departamento") else 0
+    bathrooms = max(1, bedrooms - random.randint(0, 1)) if bedrooms else random.randint(1, 3)
+    area_m2 = round(random.uniform(45, 600), 2)
+    price = round(random.uniform(20000, 450000), 2)
+    is_investment = random.random() < 0.25
+    is_presale = random.random() < 0.15
 
     return {
         "publisher_id": publisher_id,
-        "tipo": tipo,
-        "titulo": f"{SEED_PREFIX} {tipo.capitalize()} {random.choice(TITULOS_BASE)} #{index}",
-        "descripcion": (
+        "title": f"{SEED_PREFIX} {tipo.capitalize()} {random.choice(TITULOS_BASE)} #{index}",
+        "description": (
             f"Propiedad de prueba generada por el script de seed. Ubicada en "
-            f"{zona}, Santa Cruz de la Sierra. Para probar filtros del Bloque 6."
+            f"{zone}, Santa Cruz de la Sierra. Para probar filtros."
         ),
-        "precio": precio,
-        "moneda": moneda,
-        "zona": zona,
-        "direccion": f"Calle {random.randint(1, 40)} #{random.randint(100, 999)}, {zona}",
-        "habitaciones": habitaciones,
-        "banos": banos,
-        "m2": m2,
-        "garaje": random.random() < 0.7,
-        "antiguedad": random.randint(0, 30),
-        "es_preventa": es_preventa,
-        "ideal_inversion": ideal_inversion,
-        "rentabilidad_estimada": round(random.uniform(4, 12), 2) if ideal_inversion else None,
-        "whatsapp_contacto": "+59170000000",
-        "estado": "published",
+        "price": price,
+        "zone": zone,
+        "city": "Santa Cruz de la Sierra",
+        "address_private": f"Calle {random.randint(1, 40)} #{random.randint(100, 999)}, {zone}",
+        "bedrooms": bedrooms,
+        "bathrooms": bathrooms,
+        "area_m2": area_m2,
+        "has_garage": random.random() < 0.7,
+        "age_years": random.randint(0, 30),
+        "is_presale": is_presale,
+        "is_investment": is_investment,
+        "estimated_yield": round(random.uniform(4, 12), 2) if is_investment else None,
+        "contact_whatsapp": "+59170000000",
     }
 
 
@@ -99,7 +100,7 @@ def seed(publisher_id: str, count: int, force: bool) -> None:
     existing = (
         admin.table("properties")
         .select("id", count="exact")
-        .like("titulo", f"{SEED_PREFIX}%")
+        .like("title", f"{SEED_PREFIX}%")
         .execute()
     )
     existing_count = existing.count or 0
@@ -113,7 +114,7 @@ def seed(publisher_id: str, count: int, force: bool) -> None:
 
     if existing_count > 0 and force:
         print(f"--force: borrando {existing_count} propiedades de seed anteriores...")
-        admin.table("properties").delete().like("titulo", f"{SEED_PREFIX}%").execute()
+        admin.table("properties").delete().like("title", f"{SEED_PREFIX}%").execute()
 
     rows = [_fake_property(i, publisher_id) for i in range(1, count + 1)]
 
@@ -124,7 +125,7 @@ def seed(publisher_id: str, count: int, force: bool) -> None:
         result = admin.table("properties").insert(batch).execute()
         inserted += len(result.data or [])
 
-    print(f"Listo: {inserted} propiedades de seed insertadas en estado 'published'.")
+    print(f"Listo: {inserted} propiedades de seed insertadas.")
 
 
 def main():

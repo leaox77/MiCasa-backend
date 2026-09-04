@@ -6,15 +6,17 @@ from app.services.notification_service import notify_new_interest
 def express_interest(property_id: str, buyer: dict, message: str = None) -> dict:
     admin = get_supabase_admin()
 
-    # Verificar propiedad publicada
+    # TODO (pendiente coherencia de schema con Leandro): antes se
+    # validaba estado != "published" -> 404. Sin columna "status" real,
+    # cualquier propiedad existente acepta interés, publicada o no.
     prop = (
         admin.table("properties")
-        .select("id, titulo, estado, publisher_id")
+        .select("id, title, publisher_id")
         .eq("id", property_id)
         .maybe_single()
         .execute()
     )
-    if not prop.data or prop.data["estado"] != "published":
+    if not prop.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
 
     # Verificar duplicado
@@ -51,7 +53,7 @@ def express_interest(property_id: str, buyer: dict, message: str = None) -> dict
         notify_new_interest(
             publisher_id=prop.data["publisher_id"],
             property_id=property_id,
-            prop_title=prop.data["titulo"],
+            prop_title=prop.data["title"],
             publisher_email=publisher.data.get("email", ""),
             buyer_name=buyer.get("full_name", ""),
             buyer_email=buyer.get("email", ""),
@@ -64,7 +66,7 @@ def get_received_interests(publisher_id: str) -> dict:
     admin = get_supabase_admin()
     result = (
         admin.table("interest_requests")
-        .select("id, created_at, message, properties(id, titulo), profiles(full_name, email, phone)")
+        .select("id, created_at, message, properties(id, title), profiles(full_name, email, phone)")
         .eq("properties.publisher_id", publisher_id)
         .order("created_at", desc=True)
         .execute()
