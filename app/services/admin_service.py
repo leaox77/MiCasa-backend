@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
 from app.core.supabase import get_supabase_admin
 from app.services.notification_service import (
@@ -17,42 +19,122 @@ def _log_action(admin_id: str, action: str, target_type: str, target_id: str, de
     }).execute()
 
 
+def _get_user_email(user_id: str) -> str:
+    """El email vive en Supabase Auth (auth.users), no en public.profiles
+    — profiles NO tiene columna "email" en la BD real (Bug 1 del audit).
+    Se resuelve acá vía la API admin de Auth, no con un select a profiles.
+    Verificado contra supabase-py==2.4.6: admin.auth.admin.get_user_by_id
+    existe y devuelve un UserResponse con .user.email."""
+    admin = get_supabase_admin()
+    try:
+        response = admin.auth.admin.get_user_by_id(user_id)
+        return response.user.email or ""
+    except Exception:
+        return ""
+
+
 def get_pending_properties() -> dict:
-    """TODO / IMPORTANTE (pendiente coherencia de schema con Leandro): esta
-    función dependía por completo de la columna "status" (filtraba
-    'pending_review'). Sin esa columna no hay forma de saber qué propiedades
-    están pendientes de revisión — se deshabilita en vez de devolver una
-    lista que no representa lo que dice representar (p. ej. todas o
-    ninguna)."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Listado de pendientes no disponible: falta la columna 'status' en el schema real (pendiente de definir con Leandro).",
+    admin = get_supabase_admin()
+    result = (
+        admin.table("properties")
+        .select("id, title, price, currency, property_type, zone, city, publisher_id, created_at")
+        .eq("status", "pending_review")
+        .order("created_at", desc=False)
+        .execute()
     )
+    return {"data": result.data or []}
 
 
 def approve_property(property_id: str, admin_id: str) -> dict:
-    """TODO (pendiente coherencia de schema con Leandro): dependía de leer
-    y escribir "estado". Deshabilitada por el mismo motivo que
-    get_pending_properties."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Aprobar propiedad no disponible: falta la columna 'status' en el schema real (pendiente de definir con Leandro).",
+    admin = get_supabase_admin()
+
+    existing = (
+        admin.table("properties")
+        .select("id, title, publisher_id, status")
+        .eq("id", property_id)
+        .maybe_single()
+        .execute()
     )
+    property_row = existing.data
+    if not property_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
+    if property_row["status"] != "pending_review":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Solo se pueden aprobar propiedades en 'pending_review' (esta está en '{property_row['status']}').",
+        )
+
+    result = admin.table("properties").update({
+        "status": "published",
+        "reviewed_by": admin_id,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "rejection_reason": None,
+    }).eq("id", property_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No se pudo aprobar la propiedad.")
+
+    updated_row = result.data[0]
+
+    notify_publisher_property_approved(
+        publisher_id=property_row["publisher_id"],
+        property_id=property_id,
+        title=property_row["title"],
+        email=_get_user_email(property_row["publisher_id"]),
+    )
+
+    _log_action(admin_id, "approve_property", "property", property_id)
+    return updated_row
 
 
 def reject_property(property_id: str, admin_id: str, reason: str) -> dict:
-    """TODO (pendiente coherencia de schema con Leandro): mismo motivo que
-    approve_property. `rejection_reason` sí existe como columna real, pero
-    no tiene sentido setearla sin poder validar/mover el estado."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Rechazar propiedad no disponible: falta la columna 'status' en el schema real (pendiente de definir con Leandro).",
+    admin = get_supabase_admin()
+
+    existing = (
+        admin.table("properties")
+        .select("id, title, publisher_id, status")
+        .eq("id", property_id)
+        .maybe_single()
+        .execute()
     )
+    property_row = existing.data
+    if not property_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
+    if property_row["status"] != "pending_review":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Solo se pueden rechazar propiedades en 'pending_review' (esta está en '{property_row['status']}').",
+        )
+
+    result = admin.table("properties").update({
+        "status": "rejected",
+        "reviewed_by": admin_id,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "rejection_reason": reason,
+    }).eq("id", property_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No se pudo rechazar la propiedad.")
+
+    updated_row = result.data[0]
+
+    notify_publisher_property_rejected(
+        publisher_id=property_row["publisher_id"],
+        property_id=property_id,
+        title=property_row["title"],
+        email=_get_user_email(property_row["publisher_id"]),
+        reason=reason,
+    )
+
+    _log_action(admin_id, "reject_property", "property", property_id, {"reason": reason})
+    return updated_row
 
 
 def list_users(q: str = None, role: str = None, page: int = 1, page_size: int = 20) -> dict:
     admin = get_supabase_admin()
-    query = admin.table("profiles").select("id, full_name, role, phone_verified, is_active, created_at, publisher_type", count="exact")
+    query = admin.table("profiles").select(
+        "id, full_name, role, phone_verified, is_active, created_at, publisher_type", count="exact"
+    )
 
     if role:
         query = query.eq("role", role)
@@ -73,7 +155,6 @@ def suspend_user(user_id: str, admin_id: str, reason: str) -> dict:
     if target.data["role"] == "admin":
         raise HTTPException(status_code=400, detail="No se puede suspender a un administrador.")
 
-    from datetime import datetime, timezone
     result = admin.table("profiles").update({
         "is_active": False,
         "suspended_at": datetime.now(timezone.utc).isoformat(),
@@ -116,7 +197,6 @@ def list_reports() -> dict:
 def resolve_report(report_id: str, admin_id: str, resolution_note: str = None) -> dict:
     admin = get_supabase_admin()
 
-    from datetime import datetime, timezone
     result = admin.table("reports").update({
         "resolved": True,
         "resolved_by": admin_id,

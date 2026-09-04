@@ -7,16 +7,31 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
-# NOTA / PENDIENTE (revisar con Leandro - coherencia de schema):
-# Las columnas "status" (workflow draft/pending_review/published/...),
-# "currency" (BOB/USD) y "property_type" (casa/departamento/terreno/...)
-# NO existen en la tabla "properties" real (schema.sql / data.sql que mandó
-# Leandro). Por eso los enums PropertyType, PropertyStatus y Currency, y todos
-# los campos que dependian de ellos (tipo, estado, moneda, nuevo_estado)
-# quedan fuera de este archivo por ahora. Esto significa que, hasta que se
-# resuelva ese punto, no hay filtro por tipo de propiedad, no hay manejo de
-# moneda, y no hay workflow de aprobación/publicación a nivel de columna.
+# status/currency/property_type ya existen en la BD real (migración
+# 20260903120000_add_status_currency_property_type.sql). Enums abajo.
 # ---------------------------------------------------------------------------
+
+class PropertyType(str, Enum):
+    casa = "casa"
+    departamento = "departamento"
+    terreno = "terreno"
+    local = "local"
+    oficina = "oficina"
+
+
+class Currency(str, Enum):
+    BOB = "BOB"
+    USD = "USD"
+
+
+class PropertyStatus(str, Enum):
+    draft = "draft"
+    pending_review = "pending_review"
+    published = "published"
+    paused = "paused"
+    expired = "expired"
+    deleted = "deleted"
+    rejected = "rejected"
 
 
 # ---------------------------------------------------------------------------
@@ -44,9 +59,11 @@ class PropertyCreate(BaseModel):
     title: str
     description: str
     price: Decimal
+    property_type: PropertyType
+    currency: Currency = Currency.BOB
     zone: str
     city: Optional[str] = None  # columna real tiene DEFAULT 'Santa Cruz de la Sierra'
-    address_private: Optional[str] = None  # antes "direccion"; solo visible p/ usuarios registrados
+    address_private: Optional[str] = None  # solo visible p/ usuarios registrados
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     bedrooms: int = Field(ge=0)
@@ -99,6 +116,7 @@ class PropertyUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     price: Optional[Decimal] = None
+    currency: Optional[Currency] = None  # decisión mía: permitir corregir la moneda al editar.
     zone: Optional[str] = None
     city: Optional[str] = None
     address_private: Optional[str] = None
@@ -113,6 +131,9 @@ class PropertyUpdate(BaseModel):
     is_investment: Optional[bool] = None
     estimated_yield: Optional[float] = None
     contact_whatsapp: Optional[str] = None
+    # property_type NO es editable: una propiedad no cambia de "casa" a
+    # "terreno" a mitad de camino. status tampoco: eso pasa exclusivamente
+    # por change_property_status / /admin/approve|reject.
 
     @field_validator("title")
     @classmethod
@@ -140,10 +161,6 @@ class PropertyUpdate(BaseModel):
 
     @model_validator(mode="after")
     def yield_coherente(self) -> "PropertyUpdate":
-        # Ojo: esto solo valida coherencia entre campos presentes en ESTE PATCH.
-        # Si en un PATCH separado se cambia is_investment sin tocar
-        # estimated_yield, la coherencia contra el valor ya guardado en
-        # la fila debe validarse en property_service.py.
         if (
             (self.is_presale or self.is_investment)
             and self.estimated_yield is not None
@@ -153,6 +170,19 @@ class PropertyUpdate(BaseModel):
                 "Si la propiedad es preventa o ideal para inversión, "
                 "la rentabilidad estimada no puede ser negativa."
             )
+        return self
+
+
+class PropertyStatusUpdate(BaseModel):
+    new_status: PropertyStatus
+    rejection_reason: Optional[str] = None
+
+    @model_validator(mode="after")
+    def reason_requerido_si_rechaza(self) -> "PropertyStatusUpdate":
+        if self.new_status == PropertyStatus.rejected and not (
+            self.rejection_reason and self.rejection_reason.strip()
+        ):
+            raise ValueError("rejection_reason es obligatorio cuando new_status es 'rejected'.")
         return self
 
 
@@ -170,6 +200,9 @@ class PropertyResponse(BaseModel):
     title: str
     description: str
     price: Decimal
+    currency: Currency
+    property_type: PropertyType
+    status: PropertyStatus
     zone: str
     city: str
     address_private: Optional[str] = None
@@ -201,6 +234,8 @@ class PropertyListItem(BaseModel):
     id: str
     main_photo: Optional[HttpUrl] = None
     price: Decimal
+    currency: Currency
+    property_type: PropertyType
     zone: str
     city: str
     bedrooms: int
@@ -217,6 +252,8 @@ class OrderBy(str, Enum):
 class PropertySearchParams(BaseModel):
     price_min: Optional[Decimal] = Field(default=None, ge=0)
     price_max: Optional[Decimal] = Field(default=None, ge=0)
+    property_type: Optional[PropertyType] = None
+    currency: Optional[Currency] = None
     zone: Optional[str] = None
     city: Optional[str] = None
     bedrooms: Optional[int] = Field(default=None, ge=0)

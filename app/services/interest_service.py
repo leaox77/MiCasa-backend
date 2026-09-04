@@ -6,20 +6,16 @@ from app.services.notification_service import notify_new_interest
 def express_interest(property_id: str, buyer: dict, message: str = None) -> dict:
     admin = get_supabase_admin()
 
-    # TODO (pendiente coherencia de schema con Leandro): antes se
-    # validaba estado != "published" -> 404. Sin columna "status" real,
-    # cualquier propiedad existente acepta interés, publicada o no.
     prop = (
         admin.table("properties")
-        .select("id, title, publisher_id")
+        .select("id, title, publisher_id, status")
         .eq("id", property_id)
         .maybe_single()
         .execute()
     )
-    if not prop.data:
+    if not prop.data or prop.data["status"] != "published":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
 
-    # Verificar duplicado
     existing = (
         admin.table("interest_requests")
         .select("id")
@@ -31,7 +27,6 @@ def express_interest(property_id: str, buyer: dict, message: str = None) -> dict
     if existing.data:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ya enviaste tu interés para esta propiedad.")
 
-    # Insertar interés
     result = admin.table("interest_requests").insert({
         "property_id": property_id,
         "buyer_id": buyer["id"],
@@ -41,7 +36,10 @@ def express_interest(property_id: str, buyer: dict, message: str = None) -> dict
     if not result.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error al registrar el interés.")
 
-    # Obtener email del publicador y notificar
+    # OJO — Bug 1 sin arreglar acá (Parte 1, fuera de este alcance): este
+    # select pide "email" a profiles, columna que no existe en la BD real.
+    # El insert de arriba funciona igual; lo que se rompe es la
+    # notificación al publicador.
     publisher = (
         admin.table("profiles")
         .select("email, full_name")

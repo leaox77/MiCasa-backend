@@ -2,11 +2,15 @@
 Script de seed para poblar `properties` con datos ficticios, para probar
 paginación y filtros en staging.
 
-TODO (pendiente coherencia de schema con Leandro): el seed original
-generaba `tipo`, `moneda` y `estado` (todas 'published'). Esas 3 columnas
-no existen en la BD real, así que este script ya NO las setea. Como
-consecuencia, TODAS las propiedades insertadas quedan visibles/buscables
-igual (no hay estado que las distinga como "publicadas").
+Tras la migración 20260903120000_add_status_currency_property_type.sql,
+property_type, currency y status vuelven a ser columnas reales — este
+script ya las setea de nuevo.
+
+OJO: trg_property_published (el trigger que calcula published_at/
+expires_at) solo dispara en UPDATE, NO en INSERT. Este script inserta
+directo con status='published', así que published_at/expires_at se
+setean a mano acá — si dependieras del trigger para esto, te quedaría
+todo en NULL pese a status='published'.
 
 Uso:
     python -m scripts.seed_properties --publisher-id <uuid-de-un-publisher-verificado>
@@ -24,12 +28,14 @@ ya corrió antes sin necesitar una tabla de control aparte.
 import argparse
 import random
 import sys
+from datetime import datetime, timedelta, timezone
 
 from app.core.supabase import get_supabase_admin
 
 SEED_PREFIX = "[SEED]"
 
 TIPOS = ["casa", "departamento", "terreno", "local", "oficina"]
+MONEDAS = ["BOB", "USD"]
 ZONAS = [
     "Equipetrol", "Las Palmas", "Urbari", "Zona Norte", "Barrio Sirari",
     "Segundo Anillo", "Tercer Anillo", "Av. Banzer", "La Guardia",
@@ -48,7 +54,7 @@ TITULOS_BASE = [
 
 
 def _fake_property(index: int, publisher_id: str) -> dict:
-    tipo = random.choice(TIPOS)  # usado solo para armar el título, ver TODO arriba
+    tipo = random.choice(TIPOS)
     zone = random.choice(ZONAS)
     bedrooms = random.randint(1, 6) if tipo in ("casa", "departamento") else 0
     bathrooms = max(1, bedrooms - random.randint(0, 1)) if bedrooms else random.randint(1, 3)
@@ -56,6 +62,7 @@ def _fake_property(index: int, publisher_id: str) -> dict:
     price = round(random.uniform(20000, 450000), 2)
     is_investment = random.random() < 0.25
     is_presale = random.random() < 0.15
+    now = datetime.now(timezone.utc)
 
     return {
         "publisher_id": publisher_id,
@@ -64,6 +71,9 @@ def _fake_property(index: int, publisher_id: str) -> dict:
             f"Propiedad de prueba generada por el script de seed. Ubicada en "
             f"{zone}, Santa Cruz de la Sierra. Para probar filtros."
         ),
+        "property_type": tipo,
+        "currency": random.choice(MONEDAS),
+        "status": "published",
         "price": price,
         "zone": zone,
         "city": "Santa Cruz de la Sierra",
@@ -77,6 +87,8 @@ def _fake_property(index: int, publisher_id: str) -> dict:
         "is_investment": is_investment,
         "estimated_yield": round(random.uniform(4, 12), 2) if is_investment else None,
         "contact_whatsapp": "+59170000000",
+        "published_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=60)).isoformat(),
     }
 
 
