@@ -11,22 +11,14 @@ from app.schemas.properties import (
     PropertySearchParams,
     PropertySearchResponse,
     PropertyStatus,
+    PropertyStatusUpdate,
     PropertyUpdate,
 )
 from app.services import storage_service
 from app.services.notification_service import (
     notify_admin_new_property_pending,
     notify_favorite_price_change,
-    notify_publisher_property_approved,
-    notify_publisher_property_rejected,
 )
-
-
-# Transiciones permitidas por rol. Solo cubre lo que pide el sprint planning
-# (paused/pending_review para publisher, published/rejected para admin) — no
-# es una máquina de estados completa por (origen -> destino); ver nota abajo.
-PUBLISHER_ALLOWED_TARGETS = {PropertyStatus.paused.value, PropertyStatus.pending_review.value}
-ADMIN_ALLOWED_TARGETS = {PropertyStatus.published.value, PropertyStatus.rejected.value}
 
 
 def _serialize_for_supabase(payload: dict) -> dict:
@@ -43,14 +35,34 @@ def _serialize_for_supabase(payload: dict) -> dict:
     return clean
 
 
+# Transiciones de status permitidas. "pending_review" NO aparece en
+# _ADMIN_TRANSITIONS a propósito: aprobar/rechazar tiene sus propios
+# endpoints dedicados en /admin (admin_service.py), que además auditan
+# la acción. Este mapa es para pausar/reactivar/reenviar/borrar.
+_PUBLISHER_TRANSITIONS: dict[str, set[str]] = {
+    PropertyStatus.draft.value: {PropertyStatus.pending_review.value},
+    PropertyStatus.rejected.value: {PropertyStatus.pending_review.value},
+    PropertyStatus.published.value: {PropertyStatus.paused.value},
+    PropertyStatus.paused.value: {PropertyStatus.published.value},
+}
+
+_ADMIN_TRANSITIONS: dict[str, set[str]] = {
+    PropertyStatus.published.value: {PropertyStatus.paused.value, PropertyStatus.deleted.value},
+    PropertyStatus.paused.value: {PropertyStatus.published.value, PropertyStatus.deleted.value},
+    PropertyStatus.draft.value: {PropertyStatus.deleted.value},
+    PropertyStatus.rejected.value: {PropertyStatus.deleted.value},
+    PropertyStatus.expired.value: {PropertyStatus.deleted.value},
+}
+
+
 def create_property(publisher_id: str, data: PropertyCreate, submit: bool = False) -> dict:
-    """Crea una propiedad en 'draft'. Si submit=True, la pasa directo a
-    'pending_review' y avisa a los admins (wizard de 3 pasos del frontend)."""
+    """Crea una propiedad. status inicial: 'pending_review' si submit=True
+    (y se notifica a los admins), 'draft' si no."""
     admin = get_supabase_admin()
 
     payload = _serialize_for_supabase(data.model_dump())
     payload["publisher_id"] = publisher_id
-    payload["estado"] = (
+    payload["status"] = (
         PropertyStatus.pending_review.value if submit else PropertyStatus.draft.value
     )
 
@@ -66,7 +78,7 @@ def create_property(publisher_id: str, data: PropertyCreate, submit: bool = Fals
     if submit:
         notify_admin_new_property_pending(
             property_id=property_row["id"],
-            prop_title=property_row["titulo"],
+            prop_title=property_row["title"],
             publisher_id=publisher_id,
         )
 
@@ -75,8 +87,8 @@ def create_property(publisher_id: str, data: PropertyCreate, submit: bool = Fals
 
 def get_property(property_id: str, requesting_user: dict | None) -> dict:
     """Detalle de una propiedad. Si no está 'published', solo la ve el
-    publisher dueño o un admin — 404 (no 403) en cualquier otro caso, para
-    no filtrar si la propiedad existe."""
+    dueño o un admin. A cualquier otro (o anónimo) se le devuelve 404, no
+    403 — no reveles que el id existe."""
     admin = get_supabase_admin()
 
     result = admin.table("properties").select("*").eq("id", property_id).maybe_single().execute()
@@ -85,11 +97,11 @@ def get_property(property_id: str, requesting_user: dict | None) -> dict:
     if not property_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
 
-    is_owner = requesting_user is not None and requesting_user["id"] == property_row["publisher_id"]
-    is_admin = requesting_user is not None and requesting_user["role"] == "admin"
-
-    if property_row["estado"] != PropertyStatus.published.value and not (is_owner or is_admin):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
+    if property_row["status"] != PropertyStatus.published.value:
+        is_owner = requesting_user is not None and requesting_user.get("id") == property_row["publisher_id"]
+        is_admin = requesting_user is not None and requesting_user.get("role") == "admin"
+        if not (is_owner or is_admin):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
 
     images = (
         admin.table("property_images")
@@ -98,7 +110,7 @@ def get_property(property_id: str, requesting_user: dict | None) -> dict:
         .order("order_index")
         .execute()
     )
-    property_row["imagenes"] = images.data or []
+    property_row["images"] = images.data or []
 
     publisher = (
         admin.table("profiles")
@@ -114,8 +126,10 @@ def get_property(property_id: str, requesting_user: dict | None) -> dict:
 
 def update_property(property_id: str, publisher_id: str, data: PropertyUpdate) -> dict:
     """Edita una propiedad. Solo el dueño puede editarla. Si cambia el
-    precio, registra el cambio en property_status_history y notifica a
-    quienes la tienen en favoritos."""
+    precio, el historial se registra A MANO en property_price_history —
+    el trigger handle_price_change existe en la BD pero nunca estuvo
+    adjuntado a la tabla, y encima está roto (ver migración). No confiar
+    en que la BD lo hace sola."""
     admin = get_supabase_admin()
 
     existing = admin.table("properties").select("*").eq("id", property_id).maybe_single().execute()
@@ -130,8 +144,8 @@ def update_property(property_id: str, publisher_id: str, data: PropertyUpdate) -
     if not update_fields:
         return property_row
 
-    new_price = update_fields.get("precio")
-    price_changed = new_price is not None and Decimal(str(new_price)) != Decimal(str(property_row["precio"]))
+    new_price = update_fields.get("price")
+    price_changed = new_price is not None and Decimal(str(new_price)) != Decimal(str(property_row["price"]))
 
     payload = _serialize_for_supabase(update_fields)
 
@@ -145,34 +159,29 @@ def update_property(property_id: str, publisher_id: str, data: PropertyUpdate) -
     updated_row = result.data[0]
 
     if price_changed:
-        admin.table("property_status_history").insert({
+        admin.table("property_price_history").insert({
             "property_id": property_id,
-            "old_status": property_row["estado"],
-            "new_status": updated_row["estado"],
-            "old_price": float(property_row["precio"]),
-            "new_price": float(updated_row["precio"]),
+            "old_price": float(property_row["price"]),
+            "new_price": float(updated_row["price"]),
+            "currency": updated_row["currency"],
             "changed_by": publisher_id,
         }).execute()
 
         notify_favorite_price_change(
             property_id=property_id,
-            prop_title=updated_row["titulo"],
-            old_price=float(property_row["precio"]),
-            new_price=float(updated_row["precio"]),
-            currency=updated_row["moneda"],
+            prop_title=updated_row["title"],
+            old_price=float(property_row["price"]),
+            new_price=float(updated_row["price"]),
+            currency=updated_row["currency"],
         )
 
     return updated_row
 
 
-def change_property_status(
-    property_id: str,
-    actor: dict,
-    new_status: PropertyStatus,
-    reason: str | None = None,
-) -> dict:
-    """Cambia el estado de una propiedad según el rol del actor y notifica
-    al publisher si el resultado es 'published' o 'rejected'."""
+def change_property_status(property_id: str, actor: dict, data: PropertyStatusUpdate) -> dict:
+    """Pausar/reactivar/reenviar a revisión/borrar. Aprobar y rechazar una
+    propiedad 'pending_review' NO pasa por acá — son los endpoints
+    dedicados /admin/properties/{id}/approve y /reject (admin_service.py)."""
     admin = get_supabase_admin()
 
     existing = admin.table("properties").select("*").eq("id", property_id).maybe_single().execute()
@@ -180,83 +189,49 @@ def change_property_status(
     if not property_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
 
-    role = actor["role"]
-    new_status_value = new_status.value
+    current_status = property_row["status"]
+    is_owner = property_row["publisher_id"] == actor["id"]
+    is_admin = actor.get("role") == "admin"
 
-    if role == "publisher":
-        if property_row["publisher_id"] != actor["id"]:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No sos el dueño de esta propiedad.")
-        if new_status_value not in PUBLISHER_ALLOWED_TARGETS:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Como publicador solo podés pausar la propiedad o reenviarla a revisión.",
-            )
-    elif role == "admin":
-        if new_status_value not in ADMIN_ALLOWED_TARGETS:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Como admin solo podés publicar o rechazar propiedades.",
-            )
+    if is_admin:
+        allowed = _ADMIN_TRANSITIONS.get(current_status, set())
+    elif is_owner:
+        allowed = _PUBLISHER_TRANSITIONS.get(current_status, set())
     else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No sos el dueño de esta propiedad.")
+
+    new_status_value = data.new_status.value
+    if new_status_value not in allowed:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenés permisos para cambiar el estado de esta propiedad.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Transición inválida: '{current_status}' -> '{new_status_value}'. "
+                "Para aprobar o rechazar una propiedad 'pending_review' usá los "
+                "endpoints de /admin."
+            ),
         )
 
-    old_status_value = property_row["estado"]
+    payload = {"status": new_status_value}
+    if current_status == PropertyStatus.rejected.value and new_status_value == PropertyStatus.pending_review.value:
+        payload["rejection_reason"] = None  # reenvío: limpiar el motivo de rechazo anterior
 
-    result = admin.table("properties").update({"estado": new_status_value}).eq("id", property_id).execute()
+    result = admin.table("properties").update(payload).eq("id", property_id).execute()
     if not result.data:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No se pudo cambiar el estado de la propiedad.",
+            detail="No se pudo actualizar el estado de la propiedad.",
         )
 
     updated_row = result.data[0]
 
-    admin.table("property_status_history").insert({
-        "property_id": property_id,
-        "old_status": old_status_value,
-        "new_status": new_status_value,
-        "changed_by": actor["id"],
-    }).execute()
-
-    publisher = (
-        admin.table("profiles")
-        .select("email")
-        .eq("id", property_row["publisher_id"])
-        .maybe_single()
-        .execute()
-    )
-    publisher_email = (publisher.data or {}).get("email", "")
-
-    if new_status_value == PropertyStatus.published.value:
-        notify_publisher_property_approved(
-            publisher_id=property_row["publisher_id"],
+    if new_status_value == PropertyStatus.pending_review.value:
+        notify_admin_new_property_pending(
             property_id=property_id,
-            title=updated_row["titulo"],
-            email=publisher_email,
-        )
-    elif new_status_value == PropertyStatus.rejected.value:
-        notify_publisher_property_rejected(
+            prop_title=updated_row["title"],
             publisher_id=property_row["publisher_id"],
-            property_id=property_id,
-            title=updated_row["titulo"],
-            email=publisher_email,
-            reason=reason or "No se especificó un motivo.",
         )
 
     return updated_row
-
-
-def pause_property(property_id: str, publisher_id: str) -> dict:
-    """Atajo sobre change_property_status para pausar sin borrar (US-014)."""
-    return change_property_status(
-        property_id=property_id,
-        actor={"id": publisher_id, "role": "publisher"},
-        new_status=PropertyStatus.paused,
-        reason=None,
-    )
 
 
 def _get_owned_property_or_404(property_id: str, publisher_id: str, admin) -> dict:
@@ -271,7 +246,11 @@ def _get_owned_property_or_404(property_id: str, publisher_id: str, admin) -> di
 
 def add_property_image(property_id: str, publisher_id: str, file: UploadFile) -> dict:
     """Valida dueño, sube la foto vía storage_service y la inserta en
-    property_images. Devuelve la fila insertada."""
+    property_images.
+
+    OJO — Bug 2 pendiente (Parte 1, sin tocar acá): este insert NO manda
+    "storage_path", que en la BD real es NOT NULL. Cada subida de foto va
+    a fallar por violación de constraint hasta que se arregle esto."""
     admin = get_supabase_admin()
     _get_owned_property_or_404(property_id, publisher_id, admin)
 
@@ -310,72 +289,76 @@ def reorder_property_images(property_id: str, publisher_id: str, image_ids_in_or
     _get_owned_property_or_404(property_id, publisher_id, admin)
     storage_service.reorder_property_images(property_id, image_ids_in_order)
 
+
 def _to_list_item(row: dict) -> PropertyListItem:
     """Arma un PropertyListItem a partir de una fila de properties con
     property_images embebido (ver select() en search_properties)."""
     images = row.get("property_images") or []
-    foto_principal = None
+    main_photo = None
     if images:
-        primera = min(images, key=lambda img: img.get("order_index", 0))
-        foto_principal = primera.get("url")
+        first = min(images, key=lambda img: img.get("order_index", 0))
+        main_photo = first.get("url")
 
-    etiquetas = []
-    if row.get("es_preventa"):
-        etiquetas.append("preventa")
-    if row.get("ideal_inversion"):
-        etiquetas.append("inversion")
+    tags = []
+    if row.get("is_presale"):
+        tags.append("presale")
+    if row.get("is_investment"):
+        tags.append("investment")
 
     return PropertyListItem(
         id=row["id"],
-        foto_principal=foto_principal,
-        tipo=row["tipo"],
-        precio=row["precio"],
-        moneda=row["moneda"],
-        zona=row["zona"],
-        habitaciones=row["habitaciones"],
-        m2=row["m2"],
-        etiquetas=etiquetas,
+        main_photo=main_photo,
+        price=row["price"],
+        currency=row["currency"],
+        property_type=row["property_type"],
+        zone=row["zone"],
+        city=row["city"],
+        bedrooms=row["bedrooms"],
+        area_m2=row["area_m2"],
+        tags=tags,
     )
 
 
 def search_properties(params: PropertySearchParams) -> PropertySearchResponse:
     """Listado público con filtros acumulables (AND), paginación y orden.
-    Solo devuelve propiedades 'published'."""
+    SOLO devuelve propiedades 'published' — filtro restaurado."""
     admin = get_supabase_admin()
 
     query = (
         admin.table("properties")
         .select("*, property_images(url, order_index)", count="exact")
-        .eq("estado", PropertyStatus.published.value)
+        .eq("status", PropertyStatus.published.value)
     )
 
-    if params.tipo is not None:
-        query = query.eq("tipo", params.tipo.value)
-    if params.precio_min is not None:
-        query = query.gte("precio", float(params.precio_min))
-    if params.precio_max is not None:
-        query = query.lte("precio", float(params.precio_max))
-    if params.moneda is not None:
-        query = query.eq("moneda", params.moneda.value)
-    if params.zona is not None:
-        query = query.ilike("zona", f"%{params.zona}%")
-    if params.habitaciones is not None:
-        query = query.eq("habitaciones", params.habitaciones)
-    if params.m2_min is not None:
-        query = query.gte("m2", params.m2_min)
-    if params.m2_max is not None:
-        query = query.lte("m2", params.m2_max)
-    if params.garaje is not None:
-        query = query.eq("garaje", params.garaje)
-    if params.antiguedad is not None:
-        query = query.lte("antiguedad", params.antiguedad)
-    if params.preventa is not None:
-        query = query.eq("es_preventa", params.preventa)
+    if params.price_min is not None:
+        query = query.gte("price", float(params.price_min))
+    if params.price_max is not None:
+        query = query.lte("price", float(params.price_max))
+    if params.property_type is not None:
+        query = query.eq("property_type", params.property_type.value)
+    if params.currency is not None:
+        query = query.eq("currency", params.currency.value)
+    if params.zone is not None:
+        query = query.ilike("zone", f"%{params.zone}%")
+    if params.city is not None:
+        query = query.ilike("city", f"%{params.city}%")
+    if params.bedrooms is not None:
+        query = query.eq("bedrooms", params.bedrooms)
+    if params.area_m2_min is not None:
+        query = query.gte("area_m2", params.area_m2_min)
+    if params.area_m2_max is not None:
+        query = query.lte("area_m2", params.area_m2_max)
+    if params.has_garage is not None:
+        query = query.eq("has_garage", params.has_garage)
+    if params.age_years is not None:
+        query = query.lte("age_years", params.age_years)
+    if params.is_presale is not None:
+        query = query.eq("is_presale", params.is_presale)
 
-    if params.orden == OrderBy.precio_asc:
-        query = query.order("precio", desc=False)
-    elif params.orden == OrderBy.precio_desc:
-        query = query.order("precio", desc=True)
+    if params.order == OrderBy.price_asc:
+        query = query.order("price", desc=False)
+    elif params.order == OrderBy.price_desc:
+        query = query.order("price", desc=True)
     else:
         query = query.order("created_at", desc=True)
 

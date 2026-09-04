@@ -6,7 +6,7 @@ def list_favorites(user_id: str) -> dict:
     admin = get_supabase_admin()
     result = (
         admin.table("favorites")
-        .select("id, created_at, properties(id, titulo, precio, moneda, zona, tipo, estado)")
+        .select("id, created_at, properties(id, title, price, zone, city)")
         .eq("user_id", user_id)
         .order("created_at", desc=True)
         .execute()
@@ -17,20 +17,16 @@ def list_favorites(user_id: str) -> dict:
 def add_favorite(user_id: str, property_id: str) -> dict:
     admin = get_supabase_admin()
 
-    # Verificar que la propiedad existe y está publicada
     prop = (
         admin.table("properties")
-        .select("id, estado")
+        .select("id, status")
         .eq("id", property_id)
         .maybe_single()
         .execute()
     )
-    if not prop.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
-    if prop.data["estado"] != "published":
+    if not prop.data or prop.data["status"] != "published":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propiedad no encontrada.")
 
-    # Verificar duplicado
     existing = (
         admin.table("favorites")
         .select("id")
