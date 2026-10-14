@@ -5,6 +5,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
+from app.core.sanitize import strip_html
+
 
 # ---------------------------------------------------------------------------
 # status/currency/property_type ya existen en la BD real (migración
@@ -79,10 +81,23 @@ class PropertyCreate(BaseModel):
     @field_validator("title")
     @classmethod
     def title_length(cls, v: str) -> str:
-        v = v.strip()
-        if not (10 <= len(v) <= 100):
-            raise ValueError("El título debe tener entre 10 y 100 caracteres.")
+        v = strip_html(v)
+        if not (10 <= len(v) <= 120):
+            raise ValueError("El título debe tener entre 10 y 120 caracteres.")
         return v
+
+    @field_validator("description")
+    @classmethod
+    def description_clean(cls, v: str) -> str:
+        v = strip_html(v)
+        if len(v) < 30:
+            raise ValueError("La descripción debe tener al menos 30 caracteres.")
+        return v
+
+    @field_validator("address_private")
+    @classmethod
+    def address_clean(cls, v: Optional[str]) -> Optional[str]:
+        return strip_html(v) if v else v
 
     @field_validator("price")
     @classmethod
@@ -140,10 +155,25 @@ class PropertyUpdate(BaseModel):
     def title_length(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        v = v.strip()
-        if not (10 <= len(v) <= 100):
-            raise ValueError("El título debe tener entre 10 y 100 caracteres.")
+        v = strip_html(v)
+        if not (10 <= len(v) <= 120):
+            raise ValueError("El título debe tener entre 10 y 120 caracteres.")
         return v
+
+    @field_validator("description")
+    @classmethod
+    def description_clean(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = strip_html(v)
+        if len(v) < 30:
+            raise ValueError("La descripción debe tener al menos 30 caracteres.")
+        return v
+
+    @field_validator("address_private")
+    @classmethod
+    def address_clean(cls, v: Optional[str]) -> Optional[str]:
+        return strip_html(v) if v else v
 
     @field_validator("price")
     @classmethod
@@ -208,11 +238,11 @@ class PropertyResponse(BaseModel):
     address_private: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    bedrooms: int
-    bathrooms: int
-    area_m2: float
+    bedrooms: Optional[int] = None
+    bathrooms: Optional[int] = None
+    area_m2: Optional[float] = None
     has_garage: bool
-    age_years: int
+    age_years: Optional[int] = None
     is_presale: bool
     is_investment: bool
     estimated_yield: Optional[float] = None
@@ -238,8 +268,8 @@ class PropertyListItem(BaseModel):
     property_type: PropertyType
     zone: str
     city: str
-    bedrooms: int
-    area_m2: float
+    bedrooms: Optional[int] = None
+    area_m2: Optional[float] = None
     tags: List[str] = []
 
 
@@ -263,7 +293,7 @@ class PropertySearchParams(BaseModel):
     age_years: Optional[int] = Field(default=None, ge=0)
     is_presale: Optional[bool] = None
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=100)
+    page_size: int = Field(default=20, ge=1, le=50)
     order: OrderBy = OrderBy.recent
 
     @model_validator(mode="after")

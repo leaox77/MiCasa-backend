@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from app.dependencies import require_role
-from app.services import admin_service
+from app.services import admin_service, expiration_service
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -19,6 +19,12 @@ class SuspendRequest(BaseModel):
 
 class ResolveReportRequest(BaseModel):
     resolution_note: Optional[str] = None
+
+
+@router.post("/jobs/expiration")
+def run_expiration_job(current_user: dict = Depends(require_admin)):
+    """Corre a mano el job diario de expiración y avisos (RN-011/012)."""
+    return expiration_service.run_daily_job()
 
 
 @router.get("/properties/pending")

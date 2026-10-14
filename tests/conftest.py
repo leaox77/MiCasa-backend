@@ -52,7 +52,7 @@ class FakePostgrestQuery:
         return self
 
     def ilike(self, field, pattern):
-        needle = pattern.strip("%").lower()
+        needle = pattern.strip("%*").lower()
         self._rows = [r for r in self._rows if needle in str(r.get(field, "")).lower()]
         return self
 

@@ -1,8 +1,8 @@
 from fastapi import HTTPException, status
+from supabase import create_client
 from app.core.supabase import get_supabase_admin
 from app.core.config import get_settings
 from app.schemas.auth import RegisterRequest
-import re
 
 settings = get_settings()
 
@@ -37,12 +37,12 @@ def register_user(data: RegisterRequest) -> dict:
             "app_metadata": {}
         })
     except Exception as e:
-        # Temporal para debug — borrar después
-        print(f"ERROR SUPABASE DETALLE: {type(e).__name__}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"DEBUG: {str(e)}",
-        )
+        error_msg = str(e).lower()
+        if "already registered" in error_msg or "already been registered" in error_msg or "already exists" in error_msg or "user already" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Este email ya está registrado.",
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al crear la cuenta. Intentá de nuevo.",
@@ -83,13 +83,23 @@ def register_user(data: RegisterRequest) -> dict:
 def login_user(email: str, password: str) -> dict:
     """Autentica al usuario y devuelve el JWT."""
     admin = get_supabase_admin()
+    # Cliente descartable: sign_in_with_password guarda la sesión del usuario
+    # en el cliente, y si fuera el admin cacheado todas las queries siguientes
+    # correrían con el JWT del usuario en vez de la service role (RLS).
+    auth_client = create_client(settings.supabase_url, settings.supabase_service_role_key)
 
     try:
-        auth_response = admin.auth.sign_in_with_password({
+        auth_response = auth_client.auth.sign_in_with_password({
             "email": email,
             "password": password,
         })
-    except Exception:
+    except Exception as e:
+        # Supabase rechaza el login de cuentas sin confirmar antes de devolver la sesión.
+        if "email not confirmed" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Debés verificar tu email antes de iniciar sesión.",
+            )
         # Mensaje genérico — no revelar si el email o la contraseña son incorrectos
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

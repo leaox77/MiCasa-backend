@@ -1,3 +1,5 @@
+from pydantic import field_validator
+from app.core.sanitize import strip_html
 from fastapi import APIRouter, Depends, status
 from app.dependencies import get_current_user
 from app.services import interest_service
@@ -9,6 +11,11 @@ router = APIRouter(prefix="/interest", tags=["Interest"])
 
 class InterestRequest(BaseModel):
     message: Optional[str] = None
+
+    @field_validator("message")
+    @classmethod
+    def message_clean(cls, v: Optional[str]) -> Optional[str]:
+        return strip_html(v) if v else v
 
 
 @router.post("/{property_id}", status_code=status.HTTP_201_CREATED)

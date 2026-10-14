@@ -9,15 +9,22 @@ from app.services import auth_service
 from app.dependencies import get_current_user
 from app.core.supabase import get_supabase_admin
 from app.core.config import get_settings
+from app.core.rate_limit import rate_limit
 from twilio.rest import Client as TwilioClient
 from fastapi import HTTPException
-import random, string
+import random
+import string
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 settings = get_settings()
 
 
-@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=RegisterResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit())],
+)
 def register(data: RegisterRequest):
     user = auth_service.register_user(data)
     return {
@@ -26,7 +33,7 @@ def register(data: RegisterRequest):
     }
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login", response_model=LoginResponse, dependencies=[Depends(rate_limit())])
 def login(data: LoginRequest):
     return auth_service.login_user(data.email, data.password)
 
@@ -65,7 +72,7 @@ def verify_otp(
     return {"phone_verified": True, "message": "Celular verificado. Ya podés publicar propiedades."}
 
 
-@router.post("/resend-otp")
+@router.post("/resend-otp", dependencies=[Depends(rate_limit())])
 def resend_otp(
     data: ResendOTPRequest,
     current_user: dict = Depends(get_current_user),

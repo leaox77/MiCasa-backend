@@ -3,6 +3,7 @@ from enum import Enum
 
 from fastapi import HTTPException, UploadFile, status
 
+from app.core.config import get_settings
 from app.core.supabase import get_supabase_admin
 from app.schemas.properties import (
     OrderBy,
@@ -18,6 +19,7 @@ from app.services import storage_service
 from app.services.notification_service import (
     notify_admin_new_property_pending,
     notify_favorite_price_change,
+    notify_favorites_status_change,
 )
 
 
@@ -35,15 +37,31 @@ def _serialize_for_supabase(payload: dict) -> dict:
     return clean
 
 
+# La columna real de la BD se llama "type"; en la API y los schemas el campo
+# es "property_type". Estas dos funciones traducen en cada borde.
+def _to_db(payload: dict) -> dict:
+    if "property_type" in payload:
+        payload["type"] = payload.pop("property_type")
+    return payload
+
+
+def _from_db(row: dict) -> dict:
+    if row is not None and "type" in row:
+        row["property_type"] = row.pop("type")
+    return row
+
+
 # Transiciones de status permitidas. "pending_review" NO aparece en
 # _ADMIN_TRANSITIONS a propósito: aprobar/rechazar tiene sus propios
 # endpoints dedicados en /admin (admin_service.py), que además auditan
 # la acción. Este mapa es para pausar/reactivar/reenviar/borrar.
 _PUBLISHER_TRANSITIONS: dict[str, set[str]] = {
-    PropertyStatus.draft.value: {PropertyStatus.pending_review.value},
-    PropertyStatus.rejected.value: {PropertyStatus.pending_review.value},
-    PropertyStatus.published.value: {PropertyStatus.paused.value},
-    PropertyStatus.paused.value: {PropertyStatus.published.value},
+    PropertyStatus.draft.value: {PropertyStatus.pending_review.value, PropertyStatus.deleted.value},
+    PropertyStatus.pending_review.value: {PropertyStatus.draft.value},
+    PropertyStatus.rejected.value: {PropertyStatus.pending_review.value, PropertyStatus.deleted.value},
+    PropertyStatus.published.value: {PropertyStatus.paused.value, PropertyStatus.deleted.value},
+    PropertyStatus.paused.value: {PropertyStatus.published.value, PropertyStatus.deleted.value},
+    PropertyStatus.expired.value: {PropertyStatus.deleted.value},
 }
 
 _ADMIN_TRANSITIONS: dict[str, set[str]] = {
@@ -55,16 +73,14 @@ _ADMIN_TRANSITIONS: dict[str, set[str]] = {
 }
 
 
-def create_property(publisher_id: str, data: PropertyCreate, submit: bool = False) -> dict:
-    """Crea una propiedad. status inicial: 'pending_review' si submit=True
-    (y se notifica a los admins), 'draft' si no."""
+def create_property(publisher_id: str, data: PropertyCreate) -> dict:
+    """Crea una propiedad en estado 'draft'. El envío a revisión es un paso
+    aparte (POST /properties/{id}/submit) porque exige al menos 1 foto."""
     admin = get_supabase_admin()
 
-    payload = _serialize_for_supabase(data.model_dump())
+    payload = _to_db(_serialize_for_supabase(data.model_dump(exclude_none=True)))
     payload["publisher_id"] = publisher_id
-    payload["status"] = (
-        PropertyStatus.pending_review.value if submit else PropertyStatus.draft.value
-    )
+    payload["status"] = PropertyStatus.draft.value
 
     result = admin.table("properties").insert(payload).execute()
     if not result.data:
@@ -73,16 +89,7 @@ def create_property(publisher_id: str, data: PropertyCreate, submit: bool = Fals
             detail="No se pudo crear la propiedad.",
         )
 
-    property_row = result.data[0]
-
-    if submit:
-        notify_admin_new_property_pending(
-            property_id=property_row["id"],
-            prop_title=property_row["title"],
-            publisher_id=publisher_id,
-        )
-
-    return property_row
+    return _from_db(result.data[0])
 
 
 def get_property(property_id: str, requesting_user: dict | None) -> dict:
@@ -121,7 +128,10 @@ def get_property(property_id: str, requesting_user: dict | None) -> dict:
     )
     property_row["publisher"] = publisher.data
 
-    return property_row
+    if requesting_user is None:
+        property_row["address_private"] = None  # SEC-008: solo usuarios autenticados
+
+    return _from_db(property_row)
 
 
 def update_property(property_id: str, publisher_id: str, data: PropertyUpdate) -> dict:
@@ -142,7 +152,7 @@ def update_property(property_id: str, publisher_id: str, data: PropertyUpdate) -
 
     update_fields = data.model_dump(exclude_unset=True)
     if not update_fields:
-        return property_row
+        return _from_db(property_row)
 
     new_price = update_fields.get("price")
     price_changed = new_price is not None and Decimal(str(new_price)) != Decimal(str(property_row["price"]))
@@ -157,6 +167,23 @@ def update_property(property_id: str, publisher_id: str, data: PropertyUpdate) -
         )
 
     updated_row = result.data[0]
+
+    # RN-021: cambios sustanciales en una propiedad publicada la devuelven a revisión.
+    substantial = bool({"title", "description"} & set(update_fields)) or price_changed
+    if (
+        get_settings().review_on_edit
+        and property_row["status"] == PropertyStatus.published.value
+        and substantial
+    ):
+        back = admin.table("properties").update(
+            {"status": PropertyStatus.pending_review.value}
+        ).eq("id", property_id).execute()
+        updated_row = back.data[0] if back.data else updated_row
+        notify_admin_new_property_pending(
+            property_id=property_id,
+            prop_title=updated_row["title"],
+            publisher_id=publisher_id,
+        )
 
     if price_changed:
         admin.table("property_price_history").insert({
@@ -175,7 +202,7 @@ def update_property(property_id: str, publisher_id: str, data: PropertyUpdate) -
             currency=updated_row["currency"],
         )
 
-    return updated_row
+    return _from_db(updated_row)
 
 
 def change_property_status(property_id: str, actor: dict, data: PropertyStatusUpdate) -> dict:
@@ -211,6 +238,19 @@ def change_property_status(property_id: str, actor: dict, data: PropertyStatusUp
             ),
         )
 
+    if (
+        new_status_value == PropertyStatus.pending_review.value
+        and current_status != PropertyStatus.pending_review.value
+    ):
+        photos = (
+            admin.table("property_images").select("id", count="exact").eq("property_id", property_id).execute()
+        ).count or 0
+        if photos < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Debés subir al menos 1 foto antes de enviar la propiedad a revisión.",
+            )
+
     payload = {"status": new_status_value}
     if current_status == PropertyStatus.rejected.value and new_status_value == PropertyStatus.pending_review.value:
         payload["rejection_reason"] = None  # reenvío: limpiar el motivo de rechazo anterior
@@ -227,11 +267,18 @@ def change_property_status(property_id: str, actor: dict, data: PropertyStatusUp
     if new_status_value == PropertyStatus.pending_review.value:
         notify_admin_new_property_pending(
             property_id=property_id,
-            prop_title=updated_row["title"],
+            prop_title=property_row["title"],
             publisher_id=property_row["publisher_id"],
         )
 
-    return updated_row
+    if new_status_value in (
+        PropertyStatus.paused.value,
+        PropertyStatus.expired.value,
+        PropertyStatus.deleted.value,
+    ):
+        notify_favorites_status_change(property_id, property_row["title"], new_status_value)
+
+    return _from_db(updated_row)
 
 
 def _get_owned_property_or_404(property_id: str, publisher_id: str, admin) -> dict:
@@ -246,11 +293,7 @@ def _get_owned_property_or_404(property_id: str, publisher_id: str, admin) -> di
 
 def add_property_image(property_id: str, publisher_id: str, file: UploadFile) -> dict:
     """Valida dueño, sube la foto vía storage_service y la inserta en
-    property_images.
-
-    OJO — Bug 2 pendiente (Parte 1, sin tocar acá): este insert NO manda
-    "storage_path", que en la BD real es NOT NULL. Cada subida de foto va
-    a fallar por violación de constraint hasta que se arregle esto."""
+    property_images (storage_path es NOT NULL en la BD)."""
     admin = get_supabase_admin()
     _get_owned_property_or_404(property_id, publisher_id, admin)
 
@@ -266,7 +309,10 @@ def add_property_image(property_id: str, publisher_id: str, file: UploadFile) ->
     result = admin.table("property_images").insert({
         "property_id": property_id,
         "url": uploaded["url"],
+        "storage_path": uploaded["storage_path"],
         "order_index": uploaded["order_index"],
+        "is_cover": uploaded["order_index"] == 0,
+        "file_size_bytes": uploaded["file_size_bytes"],
     }).execute()
 
     if not result.data:
@@ -310,7 +356,7 @@ def _to_list_item(row: dict) -> PropertyListItem:
         main_photo=main_photo,
         price=row["price"],
         currency=row["currency"],
-        property_type=row["property_type"],
+        property_type=row["type"],
         zone=row["zone"],
         city=row["city"],
         bedrooms=row["bedrooms"],
@@ -335,13 +381,13 @@ def search_properties(params: PropertySearchParams) -> PropertySearchResponse:
     if params.price_max is not None:
         query = query.lte("price", float(params.price_max))
     if params.property_type is not None:
-        query = query.eq("property_type", params.property_type.value)
+        query = query.eq("type", params.property_type.value)
     if params.currency is not None:
         query = query.eq("currency", params.currency.value)
     if params.zone is not None:
-        query = query.ilike("zone", f"%{params.zone}%")
+        query = query.ilike("zone", f"*{params.zone}*")  # "*" y no "%": un "%eq..." sin escapar rompe el proxy de Supabase
     if params.city is not None:
-        query = query.ilike("city", f"%{params.city}%")
+        query = query.ilike("city", f"*{params.city}*")
     if params.bedrooms is not None:
         query = query.eq("bedrooms", params.bedrooms)
     if params.area_m2_min is not None:

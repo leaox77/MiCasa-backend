@@ -28,7 +28,7 @@ PROPIEDAD_BODY = {
 }
 
 
-def test_crear_propiedad_publisher_verificado(client):
+def test_verified_publisher_can_create_property(client):
     publisher = {
         "id": "pub-1",
         "role": "publisher",
@@ -75,57 +75,7 @@ def test_crear_propiedad_publisher_verificado(client):
     assert response.json()["status"] == "draft"
 
 
-def test_crear_propiedad_con_submit_queda_pending_review(client):
-    """submit=true tiene que insertar con status='pending_review' y avisar
-    a los admins — no solo cambiar un flag que no se guarda en ningún lado."""
-    publisher = {
-        "id": "pub-1",
-        "role": "publisher",
-        "phone_verified": True,
-        "is_active": True,
-        "full_name": "Publisher Verificado",
-    }
-    app.dependency_overrides[get_current_user] = lambda: publisher
-
-    created_row = {
-        **PROPIEDAD_BODY,
-        "id": "prop-2",
-        "publisher_id": "pub-1",
-        "status": "pending_review",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z",
-        "is_presale": False,
-        "is_investment": False,
-        "estimated_yield": None,
-        "contact_whatsapp": None,
-        "view_count": 0,
-        "interest_count": 0,
-        "published_at": None,
-        "expires_at": None,
-        "renewed_at": None,
-        "rejection_reason": None,
-        "latitude": None,
-        "longitude": None,
-    }
-
-    fake_admin = MagicMock()
-    fake_admin.table.return_value.insert.return_value.execute.return_value = SimpleNamespace(
-        data=[created_row]
-    )
-
-    try:
-        with patch("app.services.property_service.get_supabase_admin", return_value=fake_admin), \
-             patch("app.services.property_service.notify_admin_new_property_pending") as mock_notify:
-            response = client.post("/api/v1/properties?submit=true", json=PROPIEDAD_BODY)
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 201
-    assert response.json()["status"] == "pending_review"
-    mock_notify.assert_called_once()
-
-
-def test_crear_propiedad_falla_si_no_verificado(client):
+def test_create_property_fails_when_publisher_not_verified(client):
     publisher_no_verificado = {
         "id": "pub-2",
         "role": "publisher",
@@ -144,7 +94,7 @@ def test_crear_propiedad_falla_si_no_verificado(client):
     assert "verificar tu número de celular" in response.json()["detail"].lower()
 
 
-def test_falla_subir_foto_16_limite_15():
+def test_upload_fails_when_image_limit_of_15_reached():
     class FakeUploadFile:
         def __init__(self, content_type, content):
             self.content_type = content_type
@@ -163,8 +113,8 @@ def test_falla_subir_foto_16_limite_15():
     assert "máximo" in exc_info.value.detail.lower()
 
 
-def test_publicador_puede_enviar_borrador_a_revision():
-    property_row = {"id": "prop-1", "publisher_id": "pub-1", "status": "draft"}
+def test_publisher_can_submit_draft_for_review():
+    property_row = {"id": "prop-1", "publisher_id": "pub-1", "status": "draft", "title": "Casa de prueba para revisión"}
     updated_row = {**property_row, "status": "pending_review"}
 
     fake_admin = MagicMock()
@@ -173,6 +123,10 @@ def test_publicador_puede_enviar_borrador_a_revision():
     )
     fake_admin.table.return_value.update.return_value.eq.return_value.execute.return_value = SimpleNamespace(
         data=[updated_row]
+    )
+    # RN-014/015: hace falta al menos 1 foto para enviar a revisión
+    fake_admin.table.return_value.select.return_value.eq.return_value.execute.return_value = SimpleNamespace(
+        data=[{"id": "img-1"}], count=1
     )
 
     actor = {"id": "pub-1", "role": "publisher"}
@@ -187,7 +141,7 @@ def test_publicador_puede_enviar_borrador_a_revision():
     mock_notify.assert_called_once()
 
 
-def test_publicador_no_puede_saltar_directo_a_publicado():
+def test_publisher_cannot_jump_straight_to_published():
     """draft -> published no es una transición válida para el publisher —
     tiene que pasar por pending_review y ser aprobada por un admin."""
     property_row = {"id": "prop-1", "publisher_id": "pub-1", "status": "draft"}
@@ -208,7 +162,7 @@ def test_publicador_no_puede_saltar_directo_a_publicado():
     assert exc_info.value.status_code == 400
 
 
-def test_otro_publicador_no_puede_cambiar_estado_de_propiedad_ajena():
+def test_other_publisher_cannot_change_status_of_foreign_property():
     property_row = {"id": "prop-1", "publisher_id": "pub-1", "status": "draft"}
 
     fake_admin = MagicMock()
@@ -227,37 +181,37 @@ def test_otro_publicador_no_puede_cambiar_estado_de_propiedad_ajena():
     assert exc_info.value.status_code == 403
 
 
-def test_busqueda_con_filtros_combinados_devuelve_solo_coincidencias():
+def test_combined_search_filters_return_only_matches():
     dataset = [
         {  # cumple todos los filtros
             "id": "a1", "price": 120000, "zone": "Equipetrol", "city": "Santa Cruz de la Sierra",
             "bedrooms": 3, "area_m2": 200, "is_presale": False, "is_investment": False,
-            "status": "published", "property_type": "casa", "currency": "BOB",
+            "status": "published", "type": "casa", "currency": "BOB",
             "created_at": "2026-01-01T00:00:00Z",
             "property_images": [{"url": "https://cdn.example.com/a1.jpg", "order_index": 0}],
         },
         {  # excluida por price_max
             "id": "b1", "price": 180000, "zone": "Equipetrol", "city": "Santa Cruz de la Sierra",
             "bedrooms": 3, "area_m2": 210, "is_presale": False, "is_investment": False,
-            "status": "published", "property_type": "casa", "currency": "BOB",
+            "status": "published", "type": "casa", "currency": "BOB",
             "created_at": "2026-01-01T00:00:00Z", "property_images": [],
         },
         {  # excluida por zone
             "id": "c1", "price": 100000, "zone": "Norte", "city": "Santa Cruz de la Sierra",
             "bedrooms": 3, "area_m2": 90, "is_presale": False, "is_investment": False,
-            "status": "published", "property_type": "casa", "currency": "BOB",
+            "status": "published", "type": "casa", "currency": "BOB",
             "created_at": "2026-01-01T00:00:00Z", "property_images": [],
         },
         {  # excluida por bedrooms
             "id": "d1", "price": 90000, "zone": "Equipetrol", "city": "Santa Cruz de la Sierra",
             "bedrooms": 2, "area_m2": 150, "is_presale": False, "is_investment": False,
-            "status": "published", "property_type": "casa", "currency": "BOB",
+            "status": "published", "type": "casa", "currency": "BOB",
             "created_at": "2026-01-01T00:00:00Z", "property_images": [],
         },
         {  # excluida por status (no publicada), pese a cumplir el resto
             "id": "e1", "price": 130000, "zone": "Equipetrol", "city": "Santa Cruz de la Sierra",
             "bedrooms": 3, "area_m2": 180, "is_presale": False, "is_investment": False,
-            "status": "draft", "property_type": "casa", "currency": "BOB",
+            "status": "draft", "type": "casa", "currency": "BOB",
             "created_at": "2026-01-01T00:00:00Z", "property_images": [],
         },
     ]
@@ -277,3 +231,24 @@ def test_busqueda_con_filtros_combinados_devuelve_solo_coincidencias():
     assert response.total == 1
     assert len(response.results) == 1
     assert response.results[0].id == "a1"
+
+def test_anonymous_user_does_not_see_address_private():
+    row = {
+        "id": "prop-1", "publisher_id": "pub-1", "status": "published", "type": "casa",
+        "address_private": "Calle Falsa 123",
+    }
+    fake_admin = MagicMock()
+    fake_admin.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.side_effect = (
+        lambda: SimpleNamespace(data=dict(row))
+    )
+    fake_admin.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value = (
+        SimpleNamespace(data=[])
+    )
+
+    with patch("app.services.property_service.get_supabase_admin", return_value=fake_admin):
+        anonymous = property_service.get_property("prop-1", None)
+        logged_in = property_service.get_property("prop-1", {"id": "buyer-1", "role": "buyer"})
+
+    assert anonymous["address_private"] is None
+    assert anonymous["property_type"] == "casa"
+    assert logged_in["address_private"] == "Calle Falsa 123"

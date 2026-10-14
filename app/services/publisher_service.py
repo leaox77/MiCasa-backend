@@ -16,7 +16,7 @@ def get_my_properties(
     query = (
         admin.table("properties")
         .select(
-            "id, title, zone, price, currency, property_type, status, created_at, "
+            "id, title, zone, price, currency, type, status, created_at, "
             "updated_at, expires_at, view_count, interest_count",
             count="exact",
         )
@@ -28,7 +28,10 @@ def get_my_properties(
     start = (page - 1) * page_size
     query = query.order("created_at", desc=True).range(start, start + page_size - 1)
     result = query.execute()
-    return {"data": result.data or [], "total": result.count or 0, "page": page, "page_size": page_size}
+    data = result.data or []
+    for row in data:
+        row["property_type"] = row.pop("type")
+    return {"data": data, "total": result.count or 0, "page": page, "page_size": page_size}
 
 
 def get_my_metrics(publisher_id: str) -> dict:

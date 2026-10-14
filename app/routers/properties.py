@@ -12,11 +12,12 @@ from app.schemas.properties import (
     PropertyResponse,
     PropertySearchParams,
     PropertySearchResponse,
+    PropertyStatus,
     PropertyStatusUpdate,
     PropertyType,
     PropertyUpdate,
 )
-from app.services import property_service
+from app.services import property_service, publisher_service
 
 router = APIRouter(prefix="/properties", tags=["Properties"])
 
@@ -30,13 +31,9 @@ class ImageReorderRequest(BaseModel):
 @router.post("", response_model=PropertyResponse, status_code=status.HTTP_201_CREATED)
 def create_property(
     data: PropertyCreate,
-    submit: bool = Query(
-        False,
-        description="Si es true, envía la propiedad directo a revisión en vez de guardarla como borrador.",
-    ),
     current_user: dict = Depends(require_verified_publisher),
 ):
-    return property_service.create_property(current_user["id"], data, submit=submit)
+    return property_service.create_property(current_user["id"], data)
 
 
 @router.get("", response_model=PropertySearchResponse)
@@ -54,7 +51,7 @@ def search_properties(
     age_years: int | None = Query(None, ge=0),
     is_presale: bool | None = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=50),
     order: OrderBy = Query(OrderBy.recent),
 ):
     try:
@@ -76,7 +73,7 @@ def search_properties(
             order=order,
         )
     except ValidationError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.errors())
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.errors(include_url=False, include_context=False, include_input=False))
 
     return property_service.search_properties(params)
 
@@ -104,6 +101,36 @@ def change_property_status(
     current_user: dict = Depends(get_current_user),
 ):
     return property_service.change_property_status(property_id, current_user, data)
+
+
+@router.post("/{property_id}/submit", response_model=PropertyResponse)
+def submit_property(
+    property_id: str,
+    current_user: dict = Depends(require_verified_publisher),
+):
+    """Envía la propiedad a revisión administrativa (requiere al menos 1 foto)."""
+    return property_service.change_property_status(
+        property_id, current_user, PropertyStatusUpdate(new_status=PropertyStatus.pending_review)
+    )
+
+
+@router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_property(
+    property_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Eliminación suave (RN-020): la propiedad pasa a 'deleted', no se borra."""
+    property_service.change_property_status(
+        property_id, current_user, PropertyStatusUpdate(new_status=PropertyStatus.deleted)
+    )
+
+
+@router.post("/{property_id}/renew")
+def renew_property(
+    property_id: str,
+    current_user: dict = Depends(require_verified_publisher),
+):
+    return publisher_service.renew_property(property_id, current_user["id"])
 
 
 @router.post(

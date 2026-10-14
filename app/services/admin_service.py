@@ -5,6 +5,7 @@ from app.core.supabase import get_supabase_admin
 from app.services.notification_service import (
     notify_publisher_property_approved,
     notify_publisher_property_rejected,
+    notify_user_suspended,
 )
 
 
@@ -33,16 +34,22 @@ def _get_user_email(user_id: str) -> str:
         return ""
 
 
+def _with_property_type(row: dict) -> dict:
+    """La columna real es "type"; la API expone "property_type"."""
+    row["property_type"] = row.pop("type")
+    return row
+
+
 def get_pending_properties() -> dict:
     admin = get_supabase_admin()
     result = (
         admin.table("properties")
-        .select("id, title, price, currency, property_type, zone, city, publisher_id, created_at")
+        .select("id, title, price, currency, type, zone, city, publisher_id, created_at")
         .eq("status", "pending_review")
         .order("created_at", desc=False)
         .execute()
     )
-    return {"data": result.data or []}
+    return {"data": [_with_property_type(r) for r in (result.data or [])]}
 
 
 def approve_property(property_id: str, admin_id: str) -> dict:
@@ -161,7 +168,11 @@ def suspend_user(user_id: str, admin_id: str, reason: str) -> dict:
         "suspended_reason": reason,
     }).eq("id", user_id).execute()
 
+    # RN-006: sus publicaciones activas pasan a 'paused'.
+    admin.table("properties").update({"status": "paused"}).eq("publisher_id", user_id).eq("status", "published").execute()
+
     _log_action(admin_id, "suspend_user", "user", user_id, {"reason": reason})
+    notify_user_suspended(_get_user_email(user_id), reason)
     return result.data[0]
 
 
@@ -186,7 +197,7 @@ def list_reports() -> dict:
     admin = get_supabase_admin()
     result = (
         admin.table("reports")
-        .select("id, reason, description, resolved, created_at, properties(id, title), profiles(full_name)")
+        .select("id, reason, description, resolved, created_at, properties(id, title), profiles!reports_reporter_id_fkey(full_name)")
         .eq("resolved", False)
         .order("created_at", desc=False)
         .execute()

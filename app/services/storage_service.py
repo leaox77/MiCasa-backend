@@ -48,7 +48,7 @@ def _storage_path_from_url(property_id: str, stored_url: str) -> str:
 
 def upload_property_image(property_id: str, file: UploadFile, current_count: int) -> dict:
     """Sube y comprime una foto de una propiedad a Supabase Storage.
-    Devuelve {'url': str, 'order_index': int} listo para insertar en
+    Devuelve {'url', 'storage_path', 'order_index', 'file_size_bytes'} listo para insertar en
     property_images desde property_service."""
 
     if current_count >= MAX_IMAGES_PER_PROPERTY:
@@ -67,7 +67,7 @@ def upload_property_image(property_id: str, file: UploadFile, current_count: int
     raw_bytes = file.file.read()
     if len(raw_bytes) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="La imagen supera el tamaño máximo permitido de 5MB.",
         )
 
@@ -110,7 +110,12 @@ def upload_property_image(property_id: str, file: UploadFile, current_count: int
             detail="La imagen se subió pero no se pudo generar el enlace de acceso. Intentá de nuevo.",
         )
 
-    return {"url": url, "order_index": current_count}
+    return {
+        "url": url,
+        "storage_path": file_path,
+        "order_index": current_count,
+        "file_size_bytes": len(compressed_bytes),
+    }
 
 
 def delete_property_image(property_id: str, image_id: str) -> None:
@@ -131,7 +136,7 @@ def delete_property_image(property_id: str, image_id: str) -> None:
             detail="La imagen no existe o no pertenece a esta propiedad.",
         )
 
-    storage_path = _storage_path_from_url(property_id, record.data["url"])
+    storage_path = record.data.get("storage_path") or _storage_path_from_url(property_id, record.data["url"])
 
     try:
         admin.storage.from_(BUCKET_NAME).remove([storage_path])

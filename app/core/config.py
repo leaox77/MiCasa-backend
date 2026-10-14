@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     resend_api_key: str
     email_from: str = "noreply@micasa.bo"
 
+    # RN-021: si es True, editar título/descripción/precio de una propiedad publicada
+    # la devuelve a revisión del admin.
+    review_on_edit: bool = True
+
     app_env: str = "development"
     frontend_url: str = "http://localhost:5173"
     allowed_origins: str = "http://localhost:5173"

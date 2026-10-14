@@ -1,7 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
-from app.routers import auth, users, properties, favorites, interest, admin, reports, publisher, views
+from app.routers import auth, users, properties, favorites, interest, admin, reports, publisher, views, notifications, search
 
 settings = get_settings()
 
@@ -11,6 +11,16 @@ app = FastAPI(
     docs_url="/docs" if settings.app_env != "production" else None,
     redoc_url=None,
 )
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """SEC-017: headers de seguridad en todas las respuestas."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,6 +39,8 @@ app.include_router(publisher.router,  prefix="/api/v1")
 app.include_router(admin.router,      prefix="/api/v1")
 app.include_router(reports.router,    prefix="/api/v1")
 app.include_router(views.router,      prefix="/api/v1")
+app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(search.router,     prefix="/api/v1")
 
 
 @app.get("/health")

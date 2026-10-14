@@ -34,14 +34,14 @@ from app.core.supabase import get_supabase_admin
 
 SEED_PREFIX = "[SEED]"
 
-TIPOS = ["casa", "departamento", "terreno", "local", "oficina"]
-MONEDAS = ["BOB", "USD"]
-ZONAS = [
+PROPERTY_TYPES = ["casa", "departamento", "terreno", "local", "oficina"]
+CURRENCIES = ["BOB", "USD"]
+ZONES = [
     "Equipetrol", "Las Palmas", "Urbari", "Zona Norte", "Barrio Sirari",
     "Segundo Anillo", "Tercer Anillo", "Av. Banzer", "La Guardia",
     "Warnes", "Villa 1ro de Mayo", "Radial 10", "Cotoca", "El Trompillo",
 ]
-TITULOS_BASE = [
+BASE_TITLES = [
     "amplia y luminosa en zona residencial",
     "a estrenar con acabados de lujo",
     "ideal para inversión, alta plusvalía",
@@ -54,9 +54,9 @@ TITULOS_BASE = [
 
 
 def _fake_property(index: int, publisher_id: str) -> dict:
-    tipo = random.choice(TIPOS)
-    zone = random.choice(ZONAS)
-    bedrooms = random.randint(1, 6) if tipo in ("casa", "departamento") else 0
+    property_type = random.choice(PROPERTY_TYPES)
+    zone = random.choice(ZONES)
+    bedrooms = random.randint(1, 6) if property_type in ("casa", "departamento") else 0
     bathrooms = max(1, bedrooms - random.randint(0, 1)) if bedrooms else random.randint(1, 3)
     area_m2 = round(random.uniform(45, 600), 2)
     price = round(random.uniform(20000, 450000), 2)
@@ -66,13 +66,13 @@ def _fake_property(index: int, publisher_id: str) -> dict:
 
     return {
         "publisher_id": publisher_id,
-        "title": f"{SEED_PREFIX} {tipo.capitalize()} {random.choice(TITULOS_BASE)} #{index}",
+        "title": f"{SEED_PREFIX} {property_type.capitalize()} {random.choice(BASE_TITLES)} #{index}",
         "description": (
             f"Propiedad de prueba generada por el script de seed. Ubicada en "
             f"{zone}, Santa Cruz de la Sierra. Para probar filtros."
         ),
-        "property_type": tipo,
-        "currency": random.choice(MONEDAS),
+        "type": property_type,
+        "currency": random.choice(CURRENCIES),
         "status": "published",
         "price": price,
         "zone": zone,

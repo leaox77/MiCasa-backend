@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-def test_registro_exitoso_comprador(client):
+def test_register_buyer_succeeds(client):
     fake_admin = MagicMock()
     fake_admin.auth.admin.create_user.return_value = SimpleNamespace(
         user=SimpleNamespace(id="user-buyer-1")
@@ -30,7 +30,7 @@ def test_registro_exitoso_comprador(client):
     fake_admin.auth.admin.create_user.assert_called_once()
 
 
-def test_registro_exitoso_publisher_con_publisher_type(client):
+def test_register_publisher_with_publisher_type_succeeds(client):
     fake_admin = MagicMock()
     fake_admin.auth.admin.create_user.return_value = SimpleNamespace(
         user=SimpleNamespace(id="user-publisher-1")
@@ -58,7 +58,7 @@ def test_registro_exitoso_publisher_con_publisher_type(client):
     assert body["user"]["role"] == "publisher"
 
 
-def test_registro_falla_sin_terms_accepted(client):
+def test_register_fails_without_terms_accepted(client):
     response = client.post(
         "/api/v1/auth/register",
         json={
@@ -75,7 +75,7 @@ def test_registro_falla_sin_terms_accepted(client):
     assert response.status_code == 422
 
 
-def test_login_falla_email_no_verificado(client):
+def test_login_fails_when_email_not_verified(client):
     fake_admin = MagicMock()
     fake_admin.auth.sign_in_with_password.return_value = SimpleNamespace(
         user=SimpleNamespace(
@@ -86,7 +86,8 @@ def test_login_falla_email_no_verificado(client):
         session=SimpleNamespace(access_token="fake-token"),
     )
 
-    with patch("app.services.auth_service.get_supabase_admin", return_value=fake_admin):
+    with patch("app.services.auth_service.get_supabase_admin", return_value=fake_admin), \
+         patch("app.services.auth_service.create_client", return_value=fake_admin):
         response = client.post(
             "/api/v1/auth/login",
             json={"email": "noverificado@example.com", "password": "password123"},
@@ -96,11 +97,12 @@ def test_login_falla_email_no_verificado(client):
     assert "verificar tu email" in response.json()["detail"].lower()
 
 
-def test_login_falla_credenciales_incorrectas(client):
+def test_login_fails_with_wrong_credentials(client):
     fake_admin = MagicMock()
     fake_admin.auth.sign_in_with_password.side_effect = Exception("Invalid login credentials")
 
-    with patch("app.services.auth_service.get_supabase_admin", return_value=fake_admin):
+    with patch("app.services.auth_service.get_supabase_admin", return_value=fake_admin), \
+         patch("app.services.auth_service.create_client", return_value=fake_admin):
         response = client.post(
             "/api/v1/auth/login",
             json={"email": "cualquiera@example.com", "password": "incorrecta"},
